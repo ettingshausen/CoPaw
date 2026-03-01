@@ -405,7 +405,6 @@ class NextcloudTalkChannel(BaseChannel):
         # Build request body following Nextcloud Talk Bot API spec:
         # { "token": "<conversation_token>", "message": "<text>" }
         body = {
-            "token": conversation_token,
             "message": text
         }
 
@@ -419,7 +418,7 @@ class NextcloudTalkChannel(BaseChannel):
         })
 
         # Send message
-        url = f"{backend_url}ocs/v2.php/apps/spreed/api/v1/bot/message"
+        url = f"{backend_url}ocs/v2.php/apps/spreed/api/v1/bot/{conversation_token}/message"
 
         try:
             async with self._http.post(url, json=body, headers=headers) as resp:
