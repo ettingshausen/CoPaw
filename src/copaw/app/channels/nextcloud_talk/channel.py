@@ -63,7 +63,7 @@ class NextcloudTalkChannel(BaseChannel):
     process -> send_response -> Nextcloud API.
 
     Proactive send (stored backend_url):
-    - We store backend_url from incoming messages in memory
+    - We store backend_url from incoming messages in memory and disk
     - Key uses conversation token for lookup
     - to_handle "nextcloud_talk:token:<token>" stores by conversation
     """
@@ -100,13 +100,8 @@ class NextcloudTalkChannel(BaseChannel):
         # HTTP client (using aiohttp - already used by other channels)
         self._http: Optional[aiohttp.ClientSession] = None
 
-        # Token store (conversation_token -> bot_token mapping)
-        # This is loaded/saved to disk for persistence
-        self._token_store: Dict[str, str] = {}
-        self._token_store_lock = asyncio.Lock()
-
         # Backend URL store for proactive sends
-        # Maps conversation/token suffix to backend URL
+        # Maps conversation/token suffix to backend URL for cron jobs
         self._backend_url_store: Dict[str, str] = {}
         self._backend_url_lock = asyncio.Lock()
 
@@ -154,7 +149,7 @@ class NextcloudTalkChannel(BaseChannel):
         )
 
     # ---------------------------
-    # Session and token management
+    # Session and backend URL management
     # ---------------------------
 
     def resolve_session_id(
@@ -211,15 +206,6 @@ class NextcloudTalkChannel(BaseChannel):
             return {"conversation_token": token}
 
         return {}
-
-    async def _load_token_store(self) -> None:
-        """Load token store from disk."""
-        try:
-            store = load_token_store()
-            self._token_store = store
-            logger.info(f"loaded token store with {len(store)} entries")
-        except Exception:
-            logger.exception("failed to load token store")
 
     async def _save_backend_url(self, conversation_token: str, backend_url: str) -> None:
         """Store backend URL for a conversation."""
@@ -314,11 +300,8 @@ class NextcloudTalkChannel(BaseChannel):
                 "NEXTCLOUD_TALK_WEBHOOK_SECRET is required when channel is enabled"
             )
 
-        # Load token store
-        await self._load_token_store()
-
-        # Load backend URL store from disk (same file format)
-        self._backend_url_store = load_token_store()
+        # Load backend URL store from disk
+        self._backend_url_store = load_token_store() or {}
 
         # Create HTTP session (aiohttp is already used by other channels)
         self._http = aiohttp.ClientSession()
@@ -346,6 +329,14 @@ class NextcloudTalkChannel(BaseChannel):
             await self._http.close()
             self._http = None
 
+        # Persist the backend URL store for cron jobs
+        if self._backend_url_store:
+            try:
+                save_token_store(self._backend_url_store)
+                logger.info(f"persisted backend_url_store with {len(self._backend_url_store)} entries")
+            except Exception:
+                logger.exception("failed to persist backend_url_store")
+
         logger.info("nextcloud_talk channel stopped")
 
     # ---------------------------
@@ -361,12 +352,11 @@ class NextcloudTalkChannel(BaseChannel):
         """
         Send a message to Nextcloud Talk.
 
-        To handle formats:
-        - "nextcloud_talk:token:<token>" -> send to that conversation
-        - "http://..." -> direct backend URL (fallback)
+        NOTE: This endpoint expects the webhook_secret to be configured
+        in the config.json file. The bot must use the same secret that
+        was used during installation.
 
-        Bot token is required for sending. It should have been stored
-        when the bot was installed in the conversation.
+        The backend URL and conversation token must be properly configured.
         """
         if not self.enabled:
             return
@@ -400,25 +390,24 @@ class NextcloudTalkChannel(BaseChannel):
             )
             return
 
-        # Determine bot token
-        # The bot token is stored when the bot is installed in a conversation
-        # For now, we'll use the conversation token as the bot token
-        # In a real implementation, you'd need to store the bot token separately
-        # TODO: Implement proper bot token storage
+        # Get conversation token (for API request)
         conversation_token = route.get("conversation_token", meta_token)
-        bot_token = conversation_token  # This won't work! Need real bot token
 
-        if not bot_token:
+        if not conversation_token:
             logger.warning(
-                "nextcloud_talk cannot send: no bot token available"
+                f"nextcloud_talk cannot send: no conversation token for to_handle={to_handle}"
             )
             return
 
         # Normalize backend URL
         backend_url = normalize_nextcloud_url(backend_url)
 
-        # Build request body
-        body = {"message": text}
+        # Build request body following Nextcloud Talk Bot API spec:
+        # { "token": "<conversation_token>", "message": "<text>" }
+        body = {
+            "token": conversation_token,
+            "message": text
+        }
 
         # Generate signature
         body_str = json.dumps(body)
@@ -430,7 +419,7 @@ class NextcloudTalkChannel(BaseChannel):
         })
 
         # Send message
-        url = f"{backend_url}ocs/v2.php/apps/spreed/api/v1/bot/{bot_token}/message"
+        url = f"{backend_url}ocs/v2.php/apps/spreed/api/v1/bot/message"
 
         try:
             async with self._http.post(url, json=body, headers=headers) as resp:
@@ -449,22 +438,22 @@ class NextcloudTalkChannel(BaseChannel):
                     resp_data = {}
 
                 ocs = resp_data.get("ocs", {})
-                meta = ocs.get("meta", {})
+                resp_meta = ocs.get("meta", {})
 
-                if meta.get("statuscode") != 200:
+                if resp_meta.get("statuscode") != 200:
                     logger.warning(
                         f"nextcloud_talk send API error: "
-                        f"statuscode={meta.get('statuscode')} "
-                        f"message={meta.get('message')}"
+                        f"statuscode={resp_meta.get('statuscode')} "
+                        f"message={resp_meta.get('message')}"
                     )
                     return
 
                 logger.info(
-                    f"nextcloud_talk send ok: token={bot_token} len={len(text)}"
+                    f"nextcloud_talk send ok: conversation={conversation_token} len={len(text)}"
                 )
 
         except Exception:
-            logger.exception(f"nextcloud_talk send failed for token={bot_token}")
+            logger.exception(f"nextcloud_talk send failed for conversation={conversation_token}")
 
     async def send_content_parts(
         self,

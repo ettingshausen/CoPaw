@@ -52,7 +52,7 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests from Nextcloud Talk."""
-        # 只处理 webhook 路径
+        # Only handle the webhook path
         if not self.path.startswith("/webhook/nextcloud_talk"):
             self.send_response(404)
             self.end_headers()
@@ -60,23 +60,21 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            # 提取 headers
+            # Extract headers
             signature = self.headers.get(HEADER_SIGNATURE, "")
             random = self.headers.get(HEADER_RANDOM, "")
             backend = self.headers.get(HEADER_BACKEND, "")
 
             logger.info(
-                f"nextcloud_talk webhook: backend={backend[:50] if backend else 'None'} "
+                f"nextcloud_talk webhook: backend_suffix={backend[-20:] if backend else 'None'} "
                 f"signature_len={len(signature)} random_len={len(random)}"
             )
 
-            # 读取请求体
+            # Read request body
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
 
-            logger.debug(f"nextcloud_talk webhook: body={body[:200]}...")
-
-            # 验证签名
+            # Verify signature
             if not verify_request_signature(body, signature, random, self._webhook_secret):
                 logger.warning("nextcloud_talk webhook: signature verification failed")
                 self.send_response(401)
@@ -84,33 +82,33 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b'{"error":"Invalid signature"}')
                 return
 
-            # 解析 JSON payload
+            # Parse JSON payload
             try:
                 payload = json.loads(body.decode('utf-8', errors='ignore'))
             except json.JSONDecodeError as e:
-                logger.error(f"nextcloud_talk webhook: invalid JSON: {e}")
+                logger.error("nextcloud_talk webhook: invalid JSON payload")
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(b'{"error":"Invalid JSON"}')
                 return
 
-            # 标准化 backend URL
+            # Normalize backend URL
             normalized_backend = extract_backend_url(backend)
 
-            # 处理 payload
+            # Process payload
             processed = self._process_payload(payload, normalized_backend)
 
-            # 返回 200 OK
+            # Return 200 OK
             self.send_response(200)
-            self.end_headers()
             self.send_header('Content-Type', 'application/json')
+            self.end_headers()
             self.wfile.write(b'{"status":"ok"}')
 
-        except Exception as e:
+        except Exception:
             logger.exception("nextcloud_talk webhook: handling failed")
             self.send_response(500)
             self.end_headers()
-            self.wfile.write(f'{{"error":"{str(e)}"}}'.encode())
+            self.wfile.write(b'{"error":"Internal server error"}')
 
     def _process_payload(self, payload: dict, backend_url: str) -> bool:
         """
@@ -118,28 +116,28 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
 
         Returns True if message was enqueued, False otherwise.
         """
-        # 提取 activity type
+        # Extract activity type
         activity_type = payload.get("type", "")
 
-        # 提取 actor 信息
+        # Extract actor information
         actor = payload.get("actor", {})
         actor_id, actor_name, actor_type = NextcloudTalkContentParser.parse_actor(
             actor
         )
 
-        # 提取 target (conversation)
+        # Extract target (conversation)
         target = payload.get("target", {})
         conversation_token, conversation_name = (
             NextcloudTalkContentParser.parse_conversation(target)
         )
 
-        # 提取 object
+        # Extract object
         obj = payload.get("object", {})
 
         logger.info(
             f"nextcloud_talk webhook: activity={activity_type} "
-            f"actor={actor_name} ({actor_type}) "
-            f"conversation={conversation_name} ({conversation_token})"
+            f"actor={actor_id[:20]}... type={actor_type} "
+            f"conversation={conversation_name[:30] if len(conversation_name) > 30 else conversation_name}"
         )
 
         # 检查对话事件（bot added/removed）

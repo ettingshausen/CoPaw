@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Nextcloud Talk channel constants."""
 
-# Signature header names
-HEADER_SIGNATURE = "HTTP_X_NEXTCLOUD_TALK_SIGNATURE"
-HEADER_RANDOM = "HTTP_X_NEXTCLOUD_TALK_RANDOM"
-HEADER_BACKEND = "HTTP_X_NEXTCLOUD_TALK_BACKEND"
+# HTTP header names (http.server converts hyphens to underscores)
+# NOTE: http.server converts header names like "X-Nextcloud-Talk-Signature"
+# to "X_Nextcloud_Talk_Signature", NOT "HTTP_X_Nextcloud_Talk_Signature"
+HEADER_SIGNATURE = "X_Nextcloud_Talk_Signature"
+HEADER_RANDOM = "X_Nextcloud_Talk_Random"
+HEADER_BACKEND = "X_Nextcloud_Talk_Backend"
 
 # Signature length (SHA256 hex digest)
 SIGNATURE_LENGTH = 64
