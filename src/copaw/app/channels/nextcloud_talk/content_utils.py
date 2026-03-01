@@ -16,6 +16,7 @@ from .constants import (
     OBJECT_TYPE_NOTE,
     MESSAGE_NAME_NORMAL,
     MEDIA_TYPE_MARKDOWN,
+    MEDIA_TYPE_PLAIN,
 )
 
 logger = logging.getLogger(__name__)
