@@ -52,6 +52,18 @@ class QQConfig(BaseChannelConfig):
     client_secret: str = ""
 
 
+class NextcloudTalkConfig(BaseChannelConfig):
+    """
+    Nextcloud Talk (Spreed) channel: webhook_secret, webhook configuration.
+    Webhook settings control the HTTP server that receives messages from Nextcloud Talk.
+    """
+
+    webhook_secret: str = ""
+    webhook_host: str = "0.0.0.0"
+    webhook_port: int = 8765
+    webhook_path: str = "/webhook/nextcloud_talk"
+
+
 class ConsoleConfig(BaseChannelConfig):
     """Console channel: prints agent responses to stdout."""
 
@@ -68,6 +80,7 @@ class ChannelConfig(BaseModel):
     dingtalk: DingTalkConfig = DingTalkConfig()
     feishu: FeishuConfig = FeishuConfig()
     qq: QQConfig = QQConfig()
+    nextcloud_talk: NextcloudTalkConfig = NextcloudTalkConfig()
     console: ConsoleConfig = ConsoleConfig()
 
 
@@ -194,5 +207,6 @@ ChannelConfigUnion = Union[
     DingTalkConfig,
     FeishuConfig,
     QQConfig,
+    NextcloudTalkConfig,
     ConsoleConfig,
 ]
