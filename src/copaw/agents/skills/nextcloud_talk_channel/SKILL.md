@@ -205,7 +205,7 @@ ngrok 会提供公网 URL，例如：`https://abcd1234.ngrok.io`
 
 ### 权限问题
 
-如果能无法运行 OCC 命令，需要：
+如果无法运行 OCC 命令，需要：
 - 联系 Nextcloud 管理员执行 bot 安装
 - 或者自己部署 Nextcloud 实例（完全控制）
 
