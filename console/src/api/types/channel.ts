@@ -44,6 +44,13 @@ export interface TelegramConfig extends BaseChannelConfig {
   show_typing?: boolean;
 }
 
+export interface NextcloudTalkConfig extends BaseChannelConfig {
+  webhook_secret: string;
+  webhook_host: string;
+  webhook_port: number;
+  webhook_path: string;
+}
+
 export type ConsoleConfig = BaseChannelConfig;
 
 export interface VoiceChannelConfig extends BaseChannelConfig {
@@ -65,6 +72,7 @@ export interface ChannelConfig {
   feishu: FeishuConfig;
   qq: QQConfig;
   telegram: TelegramConfig;
+  nextcloud_talk: NextcloudTalkConfig;
   console: ConsoleConfig;
   voice: VoiceChannelConfig;
 }
@@ -77,4 +85,5 @@ export type SingleChannelConfig =
   | QQConfig
   | ConsoleConfig
   | TelegramConfig
+  | NextcloudTalkConfig
   | VoiceChannelConfig;

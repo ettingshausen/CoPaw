@@ -9,6 +9,7 @@ export const CHANNEL_LABELS: Record<string, string> = {
   feishu: "Feishu",
   qq: "QQ",
   telegram: "Telegram",
+  nextcloud_talk: "Nextcloud Talk",
   console: "Console",
   voice: "Twilio",
 };
