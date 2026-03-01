@@ -32,6 +32,7 @@ function ChannelsPage() {
       "imessage",
       "discord",
       "qq",
+      "nextcloud_talk",
     ];
 
     channelOrder.forEach((key) => {
