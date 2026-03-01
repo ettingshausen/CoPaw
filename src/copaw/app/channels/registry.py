@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+<<<<<<< HEAD
 _BUILTIN_SPECS: dict[str, tuple[str, str]] = {
     "imessage": (".imessage", "IMessageChannel"),
     "discord": (".discord_", "DiscordChannel"),
@@ -23,6 +24,7 @@ _BUILTIN_SPECS: dict[str, tuple[str, str]] = {
     "feishu": (".feishu", "FeishuChannel"),
     "qq": (".qq", "QQChannel"),
     "telegram": (".telegram", "TelegramChannel"),
+    "nextcloud_talk": (".nextcloud_talk", "NextcloudTalkChannel"),
     "console": (".console", "ConsoleChannel"),
     "voice": (".voice", "VoiceChannel"),
 }
