@@ -3,9 +3,7 @@
 
 import json
 import logging
-import re
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import urlparse
 
 from .constants import (
     ACTIVITY_TYPE_CREATE,
