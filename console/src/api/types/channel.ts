@@ -32,6 +32,13 @@ export interface QQConfig extends BaseChannelConfig {
   client_secret: string;
 }
 
+export interface NextcloudTalkConfig extends BaseChannelConfig {
+  webhook_secret: string;
+  webhook_host: string;
+  webhook_port: number;
+  webhook_path: string;
+}
+
 export type ConsoleConfig = BaseChannelConfig;
 
 export interface ChannelConfig {
@@ -40,6 +47,7 @@ export interface ChannelConfig {
   dingtalk: DingTalkConfig;
   feishu: FeishuConfig;
   qq: QQConfig;
+  nextcloud_talk: NextcloudTalkConfig;
   console: ConsoleConfig;
 }
 
@@ -49,4 +57,5 @@ export type SingleChannelConfig =
   | DingTalkConfig
   | FeishuConfig
   | QQConfig
+  | NextcloudTalkConfig
   | ConsoleConfig;

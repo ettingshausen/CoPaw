@@ -126,6 +126,41 @@ export function ChannelDrawer({
             </Form.Item>
           </>
         );
+      case "nextcloud_talk":
+        return (
+          <>
+            <Form.Item
+              name="webhook_secret"
+              label="Webhook Secret"
+              rules={[{ required: true }]}
+              tooltip="Must match the secret used when installing the Nextcloud bot"
+            >
+              <Input.Password placeholder="Generate with: openssl rand -hex 32" />
+            </Form.Item>
+            <Form.Item
+              name="webhook_host"
+              label="Webhook Host"
+              tooltip="Listen address for the webhook server"
+            >
+              <Input placeholder="0.0.0.0" />
+            </Form.Item>
+            <Form.Item
+              name="webhook_port"
+              label="Webhook Port"
+              rules={[{ required: true }]}
+              tooltip="Port for the webhook server"
+            >
+              <InputNumber min={1} max={65535} style={{ width: "100%" }} placeholder="8765" />
+            </Form.Item>
+            <Form.Item
+              name="webhook_path"
+              label="Webhook Path"
+              tooltip="Endpoint path for Nextcloud webhook"
+            >
+              <Input placeholder="/webhook/nextcloud_talk" />
+            </Form.Item>
+          </>
+        );
       default:
         return null;
     }
