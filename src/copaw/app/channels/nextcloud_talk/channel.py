@@ -473,7 +473,7 @@ class NextcloudTalkChannel(BaseChannel):
             if t == ContentType.TEXT and getattr(p, "text", None):
                 text_parts.append(p.text or "")
             elif t == ContentType.REFUSAL and getattr(p, "refusal", None):
-                text_parts.append(p.refusal or [])
+                text_parts.append(p.refusal or "")
 
         body = "\n".join(text_parts) if text_parts else ""
 
