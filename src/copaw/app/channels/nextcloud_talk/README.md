@@ -24,7 +24,7 @@
 **无需额外安装依赖！** 本 channel 使用 Python 标准库实现 HTTP webhook 服务器：
 
 - ✅ `http.server` - Python 内置 HTTP 服务器
-- ✅ ` threading` - 后台线程运行
+- ✅ `threading` - 后台线程运行
 - ✅ `json` - 消息解析
 - ✅ `aiohttp` - 已在其他 channels（Feishu）中使用，用于发送 HTTP 请求
 
