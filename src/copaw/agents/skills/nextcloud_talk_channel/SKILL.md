@@ -1,4 +1,4 @@
----
+﻿---
 name: nextcloud_talk_channel
 description: "Setup Nextcloud Talk bot integration for CoPaw. Helps users install and configure Nextcloud Talk bots via command line, configure webhook URLs, and set up the CoPaw nextcloud_talk channel."
 metadata:
@@ -261,7 +261,7 @@ sudo -u www-data php occ talk:bot:remove <TOKEN>
 sudo -u www-data php occ talk:bot:install \
   --name="CoPaw Assistant v2" \
   --url="https://your-server.com/webhook/nextcloud_talk" \
-  --secret="YOUR_SECRET_SECRET" \
+  --secret="YOUR_SECRET_HERE" \
   --description="Personal AI assistant powered by CoPaw" \
   --state=enabled \
   --feature=bots-v1
@@ -295,3 +295,4 @@ curl -X POST \
 3. 开发自定义功能，利用 Nextcloud Talk 的 reactions、文件分享等能力
 
 需要帮助？查看 CoPaw 文档或提交 issue。
+
