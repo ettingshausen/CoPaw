@@ -43,8 +43,8 @@ except Exception as e:
 
 # Test 2: Verify constants
 print("\n[2/5] Testing constants...")
-assert HEADER_SIGNATURE == "HTTP_X_NEXTCLOUD_TALK_SIGNATURE"
-assert HEADER_RANDOM == "HTTP_X_NEXTCLOUD_TALK_RANDOM"
+assert HEADER_SIGNATURE == "X-Nextcloud-Talk-Signature"
+assert HEADER_RANDOM == "X-Nextcloud-Talk-Random"
 assert SIGNATURE_LENGTH == 64
 print(f"✅ Constant HEADER_SIGNATURE = {HEADER_SIGNATURE}")
 print(f"✅ Constant HEADER_RANDOM = {HEADER_RANDOM}")
