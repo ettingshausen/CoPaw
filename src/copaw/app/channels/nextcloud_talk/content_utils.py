@@ -17,6 +17,7 @@ from .constants import (
     MESSAGE_NAME_NORMAL,
     MEDIA_TYPE_MARKDOWN,
     MEDIA_TYPE_PLAIN,
+    SESSION_ID_SUFFIX_LEN,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,12 @@ class NextcloudTalkContentParser:
             content_data = json.loads(content_str)
             message = content_data.get("message", "")
             parameters = content_data.get("parameters", {})
+            
+            # 确保 parameters 是字典类型
+            if not isinstance(parameters, dict):
+                logger.debug(f"parameters is not dict, converting from {type(parameters)}")
+                parameters = {}
+                
         except json.JSONDecodeError:
             # If not JSON, use content string directly
             message = content_str
@@ -90,7 +97,7 @@ class NextcloudTalkContentParser:
 
         logger.debug(
             f"parsed message content: message_len={len(message)} "
-            f"params_keys={list(parameters.keys())}"
+            f"params_type={type(parameters).__name__} params_keys={list(parameters.keys()) if isinstance(parameters, dict) else 'N/A'}"
         )
 
         return (message, parameters)
@@ -102,6 +109,11 @@ class NextcloudTalkContentParser:
 
         Example: "hi {mention-call1}!" -> "hi @world!"
         """
+        # 安全地处理 parameters，确保它是字典类型
+        if not isinstance(parameters, dict):
+            logger.debug(f"replace_mentions: parameters is not dict, type={type(parameters)}")
+            return text
+            
         for key, value in parameters.items():
             placeholder = "{" + key + "}"
             if placeholder in text:

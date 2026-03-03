@@ -82,14 +82,14 @@ def verify_request_signature(
 
 
 def generate_bot_signature(
-    body: str,
+    message_text: str,
     secret: str,
 ) -> tuple[str, str]:
     """
     Generate HMAC-SHA256 signature for outgoing bot request.
 
     Args:
-        body: Request body as string
+        message_text: The message text value (not the full JSON body)
         secret: Shared secret configured for the bot
 
     Returns:
@@ -100,8 +100,9 @@ def generate_bot_signature(
     # Generate random value
     random_value = secrets.token_hex(32)
 
-    # Calculate signature
-    message_to_sign = random_value + body
+    # Calculate signature using random + message text (not full JSON body)
+    # This matches Nextcloud Talk Bot API verification logic
+    message_to_sign = random_value + message_text
 
     signature = hmac.new(
         secret.encode("utf-8"),
@@ -187,16 +188,20 @@ def extract_backend_url(backend_header: str) -> str:
 
 def build_bot_headers(
     secret: str,
-    body: str,
+    message_text: str,
 ) -> Dict[str, str]:
     """
     Build headers for outgoing bot API request.
+
+    Args:
+        secret: Shared secret configured for the bot
+        message_text: The message text value (not the full JSON body)
 
     Returns:
         Dictionary with X-Nextcloud-Talk-Bot-Random,
         X-Nextcloud-Talk-Bot-Signature, and OCS-APIRequest headers
     """
-    random_val, signature = generate_bot_signature(body, secret)
+    random_val, signature = generate_bot_signature(message_text, secret)
 
     return {
         BOT_HEADER_RANDOM: random_val,

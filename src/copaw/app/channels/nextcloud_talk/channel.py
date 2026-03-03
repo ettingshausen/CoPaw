@@ -89,6 +89,13 @@ class NextcloudTalkChannel(BaseChannel):
         )
         self.enabled = enabled
         self.webhook_secret = webhook_secret
+        
+        # Log secret length for debugging (don't log the actual secret)
+        logger.info(
+            f"nextcloud_talk channel initialized: "
+            f"enabled={enabled} secret_len={len(webhook_secret)} "
+            f"host={webhook_host} port={webhook_port}"
+        )
         self.webhook_host = webhook_host
         self.webhook_port = webhook_port
         self.webhook_path = webhook_path or "/webhook/nextcloud_talk"
@@ -107,6 +114,13 @@ class NextcloudTalkChannel(BaseChannel):
 
         # Time debounce (disabled, manager handles)
         self._debounce_seconds = 0.0
+        
+        # Rate limiting: track last send time per session
+        self._last_send_time: Dict[str, float] = {}
+        self._send_lock = asyncio.Lock()
+        
+        # Minimum interval between sends (seconds)
+        self._min_send_interval = 2.0
 
     @classmethod
     def from_env(
@@ -365,6 +379,26 @@ class NextcloudTalkChannel(BaseChannel):
             logger.warning("nextcloud_talk http session not available")
             return
 
+        # Rate limiting: ensure minimum interval between sends
+        session_id = to_handle
+        async with self._send_lock:
+            last_time = self._last_send_time.get(session_id, 0)
+            current_time = asyncio.get_event_loop().time()
+            elapsed = current_time - last_time
+            
+            if elapsed < self._min_send_interval:
+                delay = self._min_send_interval - elapsed
+                logger.debug(f"nextcloud_talk rate limiting: waiting {delay:.1f}s before sending")
+                await asyncio.sleep(delay)
+            
+            self._last_send_time[session_id] = asyncio.get_event_loop().time()
+
+        # Truncate message if too long (Nextcloud Talk has message length limits)
+        max_length = 4000  # Reasonable limit for chat messages
+        if len(text) > max_length:
+            text = text[:max_length - 3] + "..."
+            logger.warning(f"nextcloud_talk message truncated to {max_length} chars")
+
         # Get conversation token from meta
         meta = meta or {}
         meta_token = meta.get("conversation_token", "")
@@ -403,14 +437,17 @@ class NextcloudTalkChannel(BaseChannel):
         backend_url = normalize_nextcloud_url(backend_url)
 
         # Build request body following Nextcloud Talk Bot API spec:
-        # { "token": "<conversation_token>", "message": "<text>" }
+        # { "message": "<text>" }
+        # Note: conversation token is in the URL path, not body
         body = {
-            "message": text
+            "message": text,
         }
+        body_str = json.dumps(body, ensure_ascii=False, separators=(',', ':'))
 
-        # Generate signature
-        body_str = json.dumps(body)
-        headers = build_bot_headers(self.webhook_secret, body_str)
+        # Generate signature on the message text (not full JSON body)
+        # According to Nextcloud Talk Bot API verification logic:
+        # signature = HMAC(random_header + message_text, secret)
+        headers = build_bot_headers(self.webhook_secret, text)
 
         headers.update({
             "Content-Type": "application/json",
@@ -420,13 +457,28 @@ class NextcloudTalkChannel(BaseChannel):
         # Send message
         url = f"{backend_url}ocs/v2.php/apps/spreed/api/v1/bot/{conversation_token}/message"
 
+        # Debug logging - show full values for verification
+        random_val = headers.get('X-Nextcloud-Talk-Bot-Random', 'N/A')
+        signature_val = headers.get('X-Nextcloud-Talk-Bot-Signature', 'N/A')
+        logger.info(
+            f"nextcloud_talk send: url={url} "
+            f"secret_len={len(self.webhook_secret)} "
+            f"random={random_val} "
+            f"signature={signature_val} "
+            f"body={body_str}"
+        )
+
         try:
-            async with self._http.post(url, json=body, headers=headers) as resp:
+            # Use data=body_str to ensure exact same body is sent (for signature verification)
+            async with self._http.post(url, data=body_str.encode('utf-8'), headers=headers) as resp:
                 resp_text = await resp.text()
 
                 if resp.status >= 400:
                     logger.warning(
-                        f"nextcloud_talk send failed: status={resp.status} body={resp_text[:200]}"
+                        f"nextcloud_talk send failed: status={resp.status} "
+                        f"url={url} "
+                        f"secret_len={len(self.webhook_secret)} "
+                        f"body={resp_text[:200]}"
                     )
                     return
 
@@ -485,3 +537,117 @@ class NextcloudTalkChannel(BaseChannel):
 
         if body.strip():
             await self.send(to_handle, body.strip(), meta)
+
+    async def _run_process_loop(
+        self,
+        request: "AgentRequest",
+        to_handle: str,
+        send_meta: Dict[str, Any],
+    ) -> None:
+        """
+        Override _run_process_loop to batch messages for rate limiting.
+        Nextcloud Talk Bot API has rate limits, so we collect all messages
+        and send them at the end as a single message.
+        """
+        from agentscope_runtime.engine.schemas.agent_schemas import RunStatus
+        
+        session_id = getattr(request, "session_id", "") or ""
+        bot_prefix = send_meta.get("bot_prefix", "") or getattr(
+            self, "bot_prefix", "",
+        )
+        
+        # Collect all messages
+        all_messages: List[str] = []
+        last_response = None
+        
+        try:
+            async for event in self._process(request):
+                obj = getattr(event, "object", None)
+                status = getattr(event, "status", None)
+                
+                if obj == "message" and status == RunStatus.Completed:
+                    # Extract text from event
+                    text = self._extract_text_from_event(event)
+                    if text:
+                        all_messages.append(text)
+                        
+                elif obj == "response":
+                    last_response = event
+                    await self.on_event_response(request, event)
+            
+            # Send all collected messages as a single message
+            if all_messages:
+                final_message = "\n\n".join(all_messages)
+                if bot_prefix:
+                    final_message = bot_prefix + final_message
+                await self.send(to_handle, final_message, send_meta)
+            
+            if last_response and getattr(last_response, "error", None):
+                err = getattr(
+                    last_response.error,
+                    "message",
+                    str(last_response.error),
+                )
+                err_text = (bot_prefix or "") + f"Error: {err}"
+                await self._on_consume_error(request, to_handle, err_text)
+                
+            if self._on_reply_sent:
+                args = self.get_on_reply_sent_args(request, to_handle)
+                self._on_reply_sent(self.channel, *args)
+                
+        except Exception:
+            logger.exception("channel consume_one failed")
+            await self._on_consume_error(
+                request,
+                to_handle,
+                "An error occurred while processing your request.",
+            )
+    
+    def _extract_text_from_event(self, event: Any) -> str:
+        """Extract text content from a message event.
+        
+        For Nextcloud Talk, we filter out technical details like tool calls
+        and only return the final user-facing message.
+        """
+        text_parts = []
+        
+        # Try to get content from event
+        content = getattr(event, "content", None)
+        if not content:
+            return ""
+        
+        # Check if this is a tool call message (contains 🔧 or similar markers)
+        full_text = ""
+        for part in content:
+            part_type = getattr(part, "type", None)
+            if part_type == "text":
+                text = getattr(part, "text", "")
+                if text:
+                    full_text += text
+            elif part_type == "refusal":
+                refusal = getattr(part, "refusal", "")
+                if refusal:
+                    full_text += refusal
+        
+        # Filter out technical messages (tool calls, errors, etc.)
+        # Only keep messages that don't look like technical internals
+        if full_text:
+            # Skip tool call messages (contain 🔧 or specific patterns)
+            if "🔧 **" in full_text and "**\n```" in full_text:
+                return ""  # Skip tool call messages
+            
+            # Skip error messages that are internal
+            if full_text.startswith("✅ **") and "Error:" in full_text:
+                return ""  # Skip internal error messages
+            
+            # Skip thinking/planning messages
+            if any(pattern in full_text for pattern in [
+                "用户问", "我可以", "让我", "我需要", 
+                "我应该", "我来", "思考一下", "计算一下"
+            ]) and len(full_text) < 100:
+                # This looks like internal thinking, skip it
+                return ""
+            
+            return full_text
+        
+        return ""
