@@ -79,6 +79,8 @@ class NextcloudTalkConfig(BaseChannelConfig):
     webhook_host: str = "0.0.0.0"
     webhook_port: int = 8765
     webhook_path: str = "/webhook/nextcloud_talk"
+    username: str = ""
+    password: str = ""
 
 
 class ConsoleConfig(BaseChannelConfig):

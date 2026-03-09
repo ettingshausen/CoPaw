@@ -32,6 +32,12 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
     verifies signatures, and forwards to the channel's enqueue callback.
     """
 
+    # Class-level attributes (set by channel)
+    _enqueue_callback: Any = None
+    _webhook_secret: str = ""
+    _bot_prefix: str = ""
+    _api_user: str = ""  # Same as username (BOT account for WebDAV access)
+
     def __init__(self, *args, **kwargs):
         """
         Initialize handler.
@@ -40,10 +46,12 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
         - _enqueue_callback: Function to enqueue payloads to channel
         - _webhook_secret: Shared secret for signature verification
         - _bot_prefix: Bot message prefix
+        - _api_user: Bot account username for WebDAV access (alias for username)
         """
         self._enqueue_callback = self.__class__._enqueue_callback
         self._webhook_secret = self.__class__._webhook_secret
         self._bot_prefix = self.__class__._bot_prefix
+        self._api_user = self.__class__._api_user
         super().__init__(*args, **kwargs)
 
     def log_message(self, format, *args):
@@ -116,8 +124,38 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
 
         Returns True if message was enqueued, False otherwise.
         """
-        # Extract activity type
+        # Extract activity type - handle both direct and nested structures
         activity_type = payload.get("type", "")
+        
+        # Extract object first (needed for subsequent checks)
+        obj = payload.get("object", {})
+        
+        # Some Nextcloud versions wrap the real activity in an "Activity" type
+        # If the type is "Activity", try to extract the real activity from object or meta
+        if activity_type == "Activity":
+            logger.debug("Detected wrapped Activity type, checking for nested structure")
+            # Try to get actual activity from object's summary or other fields
+            obj_summary = obj.get("summary", "")
+            if obj_summary:
+                logger.debug(f"Activity summary: {obj_summary}")
+            
+            # Log full object for debugging
+            logger.info(f"Activity object name: {obj.get('name')}, type: {obj.get('type')}")
+            logger.info(f"Activity object keys: {list(obj.keys())}")
+            
+            # Log content field which may contain file info
+            obj_content = obj.get("content", "")
+            if obj_content:
+                logger.info(f"Activity object content (first 200 chars): {str(obj_content)[:200]}")
+                # Try to parse as JSON to see if it contains file data
+                try:
+                    import json as json_lib
+                    content_json = json_lib.loads(obj_content)
+                    logger.info(f"Activity content parsed: {list(content_json.keys()) if isinstance(content_json, dict) else type(content_json)}")
+                    if "parameters" in content_json:
+                        logger.info(f"Activity has parameters: {list(content_json['parameters'].keys())}")
+                except Exception as e:
+                    logger.debug(f"Content is not JSON: {e}")
 
         # Extract actor information
         actor = payload.get("actor", {})
@@ -130,15 +168,16 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
         conversation_token, conversation_name = (
             NextcloudTalkContentParser.parse_conversation(target)
         )
-
-        # Extract object
-        obj = payload.get("object", {})
-
+        
+        # 添加详细日志用于调试
         logger.info(
             f"nextcloud_talk webhook: activity={activity_type} "
             f"actor={actor_id[:20]}... type={actor_type} "
             f"conversation={conversation_name[:30] if len(conversation_name) > 30 else conversation_name}"
         )
+        logger.debug(f"Full payload keys: {list(payload.keys())}")
+        logger.debug(f"Object details: name={obj.get('name')}, content={str(obj.get('content', ''))[:100]}")
+        logger.debug(f"Full payload preview: {json.dumps(payload, indent=2)[:500]}")
 
         # 检查对话事件（bot added/removed）
         conversation_event = NextcloudTalkContentParser.extract_conversation_event(
@@ -154,6 +193,124 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
             emoji, message_id = reaction_data
             logger.info(f"nextcloud_talk webhook: reaction emoji={emoji} message_id={message_id}")
             return False  # 不处理反应
+
+        # 检查多媒体文件（图片、视频、音频）
+        media_info = NextcloudTalkContentParser.extract_media_file(payload)
+        if media_info:
+            logger.info(
+                f"nextcloud_talk webhook: media file type={media_info['type']} "
+                f"name={media_info['name']} size={media_info['size']}"
+            )
+
+            # 导入 webdav 工具函数
+            from .webdav import build_webdav_url
+            from .utils import extract_backend_url
+
+            # Normalize backend_url (remove /s/... suffix)
+            backend_url = extract_backend_url(backend_url)
+
+            # 尝试构建 WebDAV URL（如果 api_user 可用）
+            webdav_url = None
+            if self._api_user and media_info.get("path"):
+                # Try to extract filename from metadata
+                metadata = media_info.get("metadata", {})
+                filename = media_info.get("name", metadata.get("name", ""))
+                file_path = media_info.get("path", "")
+
+                logger.info(f"Building WebDAV URL: base_url={backend_url}, api_user={self._api_user}, file_path={file_path}, filename={filename}")
+
+                # Build WebDAV URL with file_path and filename
+                webdav_url = build_webdav_url(
+                    backend_url, 
+                    self._api_user, 
+                    file_path
+                )
+                if webdav_url:
+                    logger.info(f"Built WebDAV URL: {webdav_url}")
+                else:
+                    logger.warning(f"Failed to build WebDAV URL for path: {file_path}, api_user: {self._api_user}")
+
+            # Extract share link from metadata for agent to access the file
+            metadata = media_info.get("metadata", {})
+            share_link = metadata.get("share-token") or metadata.get("link")
+
+            # 优先使用 WebDAV URL，fallback 到分享链接
+            download_url = webdav_url
+            if not download_url and share_link:
+                download_url = share_link
+
+            file_content_part = {
+                "type": "file",
+                "file_type": media_info["type"],
+                "file_name": media_info["name"],
+                "filename": media_info["name"],  # Alternative name
+                "file_path": media_info["path"],
+                "filepath": media_info["path"],  # Alternative path
+                "mime_type": media_info["mime_type"],
+                "mimetype": media_info["mime_type"],  # Alternative mime type
+                "size": media_info["size"],
+                "preview_available": media_info["preview_available"],
+                "metadata": {
+                    **metadata,
+                    "webdav_url": webdav_url,  # Add WebDAV URL to metadata
+                },
+                # Add source field for file download in message processing
+                # Use WebDAV URL if available, otherwise fall back to share link
+                "source": {
+                    "type": "url",
+                    "url": download_url
+                } if download_url else {"type": "unknown"},
+            }
+            
+            channel_payload = {
+                "channel_id": "nextcloud_talk",
+                "sender_id": actor_id,
+                "session_webhook": backend_url,
+                "content_parts": [file_content_part],
+                "meta": {
+                    "actor_id": actor_id,
+                    "actor_name": actor_name,
+                    "actor_type": actor_type,
+                    "conversation_token": conversation_token,
+                    "conversation_name": conversation_name,
+                    "message_id": obj.get("id", ""),
+                    "backend_url": backend_url,
+                    "bot_prefix": self._bot_prefix,
+                    "media_info": media_info,
+                    "api_user": self._api_user,  # Bot account for WebDAV access
+                    "webdav_url": webdav_url,  # WebDAV URL for direct download
+                    "original_content_parts": [file_content_part],  # Preserve original dict data
+                },
+            }
+            
+            # 入队
+            logger.info(f"Checking enqueue callback: {self._enqueue_callback is not None}")
+            if self._enqueue_callback:
+                logger.info(f"Enqueueing media file: {media_info['name']}")
+                # Schedule the async callback in the main event loop
+                import asyncio
+                try:
+                    # 获取主事件循环（由应用启动时创建）
+                    loop = asyncio.get_running_loop()
+                    # 在主线程的事件循环中调度协程
+                    asyncio.run_coroutine_threadsafe(
+                        self._enqueue_callback(channel_payload),
+                        loop
+                    )
+                except RuntimeError:
+                    # 如果没有运行中的事件循环，在新线程中运行
+                    def run_in_thread():
+                        asyncio.run(self._enqueue_callback(channel_payload))
+                    import threading
+                    thread = threading.Thread(target=run_in_thread, daemon=True)
+                    thread.start()
+                return True
+            else:
+                logger.warning("nextcloud_talk webhook: no enqueue callback set")
+                return False
+        else:
+            # 添加调试日志，查看 payload 结构
+            logger.debug(f"Not a media file. activity_type={payload.get('type')}, object_name={obj.get('name')}")
 
         # 检查普通消息
         message = NextcloudTalkContentParser.extract_message_text(payload)
@@ -230,6 +387,10 @@ class StdlibWebhookServer:
     def set_bot_prefix(self, prefix: str):
         """Set the bot message prefix."""
         NextcloudTalkWebhookHandler._bot_prefix = prefix
+
+    def set_api_user(self, api_user: str):
+        """Set the bot API user for WebDAV access."""
+        NextcloudTalkWebhookHandler._api_user = api_user
 
     def start(self):
         """Start the webhook server in a background thread."""

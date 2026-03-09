@@ -44,6 +44,7 @@ from .content_utils import (
     NextcloudTalkContentParser,
     session_param_from_token,
 )
+from .files_client import NextcloudFilesClient, create_nextcloud_files_client
 from .handler_stdlib import StdlibWebhookServer
 from .utils import (
     generate_bot_signature,
@@ -79,6 +80,8 @@ class NextcloudTalkChannel(BaseChannel):
         webhook_port: int = 8765,
         webhook_path: str = "/webhook/nextcloud_talk",
         bot_prefix: str = "[BOT] ",
+        username: str = "",
+        password: str = "",
         on_reply_sent: OnReplySent = None,
         show_tool_details: bool = True,
     ):
@@ -89,7 +92,23 @@ class NextcloudTalkChannel(BaseChannel):
         )
         self.enabled = enabled
         self.webhook_secret = webhook_secret
-        
+
+        # Set environment variables for Nextcloud authentication
+        # These will be used by file_handling.download_file_from_url
+        if username and password:
+            os.environ["NEXTCLOUD_USERNAME"] = username
+            os.environ["NEXTCLOUD_PASSWORD"] = password
+            logger.info("nextcloud_talk: Set NEXTCLOUD_USERNAME and NEXTCLOUD_PASSWORD for authenticated file downloads")
+
+        # Set api_user for WebDAV access
+        # Use username as api_user for accessing files via WebDAV
+        if username:
+            self.api_user = username
+            logger.info(f"nextcloud_talk: Using username as api_user for WebDAV: {username}")
+        else:
+            self.api_user = ""
+            logger.warning("nextcloud_talk: No username provided, file downloads may fail")
+
         # Log secret length for debugging (don't log the actual secret)
         logger.info(
             f"nextcloud_talk channel initialized: "
@@ -114,6 +133,12 @@ class NextcloudTalkChannel(BaseChannel):
 
         # Time debounce (disabled, manager handles)
         self._debounce_seconds = 0.0
+
+        # API user for WebDAV access
+        # This is the bot account username used to construct WebDAV URLs
+        # for downloading files via /remote.php/dav/files/{api_user}/{file_path}
+        # Use username as api_user for WebDAV access
+        self.api_user = username
         
         # Rate limiting: track last send time per session
         self._last_send_time: Dict[str, float] = {}
@@ -139,6 +164,8 @@ class NextcloudTalkChannel(BaseChannel):
                 "/webhook/nextcloud_talk",
             ),
             bot_prefix=os.getenv("NEXTCLOUD_TALK_BOT_PREFIX", "[BOT] "),
+            username=os.getenv("NEXTCLOUD_USERNAME", ""),
+            password=os.getenv("NEXTCLOUD_PASSWORD", ""),
             on_reply_sent=on_reply_sent,
         )
 
@@ -158,6 +185,8 @@ class NextcloudTalkChannel(BaseChannel):
             webhook_port=getattr(config, "webhook_port", 8765),
             webhook_path=getattr(config, "webhook_path", "/webhook/nextcloud_talk"),
             bot_prefix=getattr(config, "bot_prefix", "[BOT] "),
+            username=getattr(config, "username", ""),
+            password=getattr(config, "password", ""),
             on_reply_sent=on_reply_sent,
             show_tool_details=show_tool_details,
         )
@@ -262,6 +291,47 @@ class NextcloudTalkChannel(BaseChannel):
         content_parts = payload.get("content_parts") or []
         meta = dict(payload.get("meta") or {})
 
+        # Fix: Ensure file content_parts have file_url populated from metadata
+        # Use file_url field instead of source.url, because Message construction
+        # converts dict to FileContent and only recognizes file_url attribute
+        converted_parts = []
+        for part in content_parts:
+            if isinstance(part, dict) and part.get("type") == "file":
+                metadata = part.get("metadata", {})
+                share_link = metadata.get("share-token") or metadata.get("link")
+
+                logger.info(f"Processing file: filename={part.get('filename')}, metadata_keys={list(metadata.keys())}, share_link={share_link}")
+
+                # Build dict with file_url field for FileContent conversion
+                # Message constructor will convert this to FileContent with file_url set
+
+                # Prefer WebDAV URL over share link
+                webdav_url = metadata.get("webdav_url")
+                share_link = metadata.get("share-token") or metadata.get("link")
+
+                file_part = {
+                    "type": "file",
+                    "filename": part.get("file_name") or part.get("filename", ""),
+                }
+
+                # Use WebDAV URL if available (auth access), otherwise use share link
+                if webdav_url:
+                    file_part["file_url"] = webdav_url
+                    logger.info(f"Populated file_url with WebDAV URL for file: {file_part.get('filename')} -> {webdav_url}")
+                elif share_link:
+                    file_part["file_url"] = share_link
+                    logger.info(f"Populated file_url for file: {file_part.get('filename')} -> {share_link}")
+                else:
+                    logger.warning(f"No WebDAV URL or share link found for file: {file_part.get('filename')}")
+
+                converted_parts.append(file_part)
+            else:
+                # Keep other content parts as-is
+                converted_parts.append(part)
+
+        content_parts = converted_parts
+        logger.info(f"build_agent_request_from_native: final content_parts={content_parts}")
+
         # Extract and store backend URL for proactive sends
         backend_url = meta.get("backend_url") or payload.get("session_webhook", "")
         conversation_token = meta.get("conversation_token", "")
@@ -278,14 +348,77 @@ class NextcloudTalkChannel(BaseChannel):
             channel_meta=meta,
         )
 
+        # Preserve original content_parts in meta for later use
+        if meta is None:
+            meta = {}
+        meta['original_content_parts'] = content_parts
+
         if hasattr(request, "channel_meta"):
             request.channel_meta = meta
 
+        # 检查request中的实际内容
+        has_actual_content = False
+        if hasattr(request, 'input') and request.input:
+            first_msg = request.input[0]
+            if hasattr(first_msg, 'content') and first_msg.content:
+                has_actual_content = True
+                logger.info(f"build_agent_request_from_native: request has content: {[getattr(c, 'type', 'unknown') for c in first_msg.content]}")
+        
+        logger.info(f"build_agent_request_from_native: request created, has content_parts={has_actual_content}")
         return request
 
     # ---------------------------
-    # Webhook setup
+    # Message processing
     # ---------------------------
+
+    def _content_has_media(self, content_parts: List[Any]) -> bool:
+        """
+        Check if content_parts has media files (images, videos, audio).
+        """
+        if not content_parts:
+            return False
+        for c in content_parts:
+            # Check type attribute
+            t = getattr(c, "type", None)
+            
+            # Case 1: type is string 'file'
+            if t == 'file':
+                return True
+            
+            # Case 2: type is ContentType.FILE enum
+            from agentscope_runtime.engine.schemas.message_schemas import ContentType
+            if t == ContentType.FILE:
+                return True
+            
+            # Case 3: type has name attribute (Enum)
+            if hasattr(t, 'name') and t.name == 'FILE':
+                return True
+                
+            # Case 4: dict format
+            if isinstance(c, dict) and c.get('type') == 'file':
+                return True
+        return False
+
+    def _apply_no_text_debounce(
+        self,
+        session_id: str,
+        content_parts: List[Any],
+    ) -> tuple[bool, List[Any]]:
+        """
+        Override base class: process media files immediately even without text.
+        Only debounce when there's no text AND no media.
+        """
+        logger.info(f"_apply_no_text_debounce: called with content_parts={content_parts}")
+        
+        # If has media, process immediately
+        if self._content_has_media(content_parts):
+            logger.info(f"Media detected, processing immediately")
+            return (True, list(content_parts))
+        
+        # Otherwise use default logic (debounce if no text)
+        result = super()._apply_no_text_debounce(session_id, content_parts)
+        logger.info(f"_apply_no_text_debounce: result={result}")
+        return result
 
     def _setup_webhook_server(self):
         """Setup webhook server using Python standard library."""
@@ -296,13 +429,33 @@ class NextcloudTalkChannel(BaseChannel):
         )
 
         # Set callback and config
-        self._webhook_server.set_enqueue_callback(self._enqueue)
+        self._webhook_server.set_enqueue_callback(self.consume_one)
         self._webhook_server.set_webhook_secret(self.webhook_secret)
         self._webhook_server.set_bot_prefix(self.bot_prefix)
+        self._webhook_server.set_api_user(self.api_user)
 
     # ---------------------------
     # Lifecycle
     # ---------------------------
+
+    async def consume_one(self, payload: Any) -> None:
+        """
+        Process one payload from the manager-owned queue.
+        """
+        logger.info(f"consume_one: CALLED with payload type={type(payload)}")
+        await super().consume_one(payload)
+
+    async def _consume_one_request(self, payload: Any) -> None:
+        """
+        Convert payload to request, apply no-text debounce, run _process,
+        send messages, handle errors and on_reply_sent.
+        """
+        logger.info(f"_consume_one_request: CALLED with payload type={type(payload)}")
+        
+        # Call parent implementation
+        await super()._consume_one_request(payload)
+        
+        logger.info(f"_consume_one_request: COMPLETED")
 
     async def start(self) -> None:
         if not self.enabled:
@@ -470,38 +623,46 @@ class NextcloudTalkChannel(BaseChannel):
 
         try:
             # Use data=body_str to ensure exact same body is sent (for signature verification)
-            async with self._http.post(url, data=body_str.encode('utf-8'), headers=headers) as resp:
+            # 创建新的ClientSession避免继承的timeout配置问题
+            import aiohttp
+            timeout = aiohttp.ClientTimeout(total=30)  # 30秒超时
+            async with aiohttp.ClientSession(timeout=timeout) as temp_session:
+                resp = await temp_session.post(
+                    url, 
+                    data=body_str.encode('utf-8'), 
+                    headers=headers
+                )
                 resp_text = await resp.text()
 
-                if resp.status >= 400:
-                    logger.warning(
-                        f"nextcloud_talk send failed: status={resp.status} "
-                        f"url={url} "
-                        f"secret_len={len(self.webhook_secret)} "
-                        f"body={resp_text[:200]}"
-                    )
-                    return
-
-                # Try to parse JSON response
-                try:
-                    resp_data = json.loads(resp_text) if resp_text else {}
-                except json.JSONDecodeError:
-                    resp_data = {}
-
-                ocs = resp_data.get("ocs", {})
-                resp_meta = ocs.get("meta", {})
-
-                if resp_meta.get("statuscode") != 200:
-                    logger.warning(
-                        f"nextcloud_talk send API error: "
-                        f"statuscode={resp_meta.get('statuscode')} "
-                        f"message={resp_meta.get('message')}"
-                    )
-                    return
-
-                logger.info(
-                    f"nextcloud_talk send ok: conversation={conversation_token} len={len(text)}"
+            if resp.status >= 400:
+                logger.warning(
+                    f"nextcloud_talk send failed: status={resp.status} "
+                    f"url={url} "
+                    f"secret_len={len(self.webhook_secret)} "
+                    f"body={resp_text[:200]}"
                 )
+                return
+
+            # Try to parse JSON response
+            try:
+                resp_data = json.loads(resp_text) if resp_text else {}
+            except json.JSONDecodeError:
+                resp_data = {}
+
+            ocs = resp_data.get("ocs", {})
+            resp_meta = ocs.get("meta", {})
+
+            if resp_meta.get("statuscode") != 200:
+                logger.warning(
+                    f"nextcloud_talk send API error: "
+                    f"statuscode={resp_meta.get('statuscode')} "
+                    f"message={resp_meta.get('message')}"
+                )
+                return
+
+            logger.info(
+                f"nextcloud_talk send ok: conversation={conversation_token} len={len(text)}"
+            )
 
         except Exception:
             logger.exception(f"nextcloud_talk send failed for conversation={conversation_token}")
@@ -514,29 +675,237 @@ class NextcloudTalkChannel(BaseChannel):
     ) -> None:
         """
         Send content parts (text, images, etc.) to Nextcloud Talk.
-
-        For now, only text is supported. Media attachments would require
-        file sharing via Nextcloud Files API.
+        
+        Supports text, images, videos, and audio files.
+        For media files, combines text with media links following OpenClaw pattern.
         """
         # Extract text parts
         text_parts = []
+        media_parts = []
+        
         for p in parts:
             t = getattr(p, "type", None)
             if t == ContentType.TEXT and getattr(p, "text", None):
                 text_parts.append(p.text or "")
             elif t == ContentType.REFUSAL and getattr(p, "refusal", None):
                 text_parts.append(p.refusal or "")
+            elif t in (ContentType.IMAGE, ContentType.VIDEO, ContentType.AUDIO, ContentType.FILE):
+                media_parts.append(p)
 
+        # Build main text body
         body = "\n".join(text_parts) if text_parts else ""
-
         prefix = (meta or {}).get("bot_prefix", "")
         if prefix and body:
             body = prefix + body
         elif prefix and not body:
             body = prefix
 
+        # Add media attachments following OpenClaw pattern
+        for m in media_parts:
+            t = getattr(m, "type", None)
+            if t == ContentType.FILE:
+                # For file content, extract file information
+                file_name = getattr(m, "filename", "unknown_file")
+                file_url = getattr(m, "file_url", None)
+                if file_url:
+                    body += f"\n\nAttachment: {file_name} - {file_url}"
+                else:
+                    # Fallback to file name only
+                    body += f"\n\nFile: {file_name}"
+            elif t == ContentType.IMAGE and getattr(m, "image_url", None):
+                body += f"\n\nImage: {m.image_url}"
+            elif t == ContentType.VIDEO and getattr(m, "video_url", None):
+                body += f"\n\nVideo: {m.video_url}"
+            elif t == ContentType.AUDIO:
+                body += f"\n\nAudio attachment"
+
         if body.strip():
             await self.send(to_handle, body.strip(), meta)
+    
+    async def _build_media_message(
+        self,
+        file_info: Dict[str, Any],
+        backend_url: str,
+    ) -> str:
+        """
+        Build a message for media file sharing.
+        
+        Args:
+            file_info: File information from extract_media_file
+            backend_url: Nextcloud backend URL
+            
+        Returns:
+            Formatted message string
+        """
+        media_type = file_info.get("type", "file")
+        file_name = file_info.get("name", "unknown")
+        file_size = file_info.get("size", 0)
+        mime_type = file_info.get("mime_type", "")
+        file_path = file_info.get("path", "")
+        metadata = file_info.get("metadata", {})
+        preview_available = file_info.get("preview_available", False)
+        
+        # Format file size
+        if file_size > 1024 * 1024:
+            size_str = f"{file_size / (1024 * 1024):.1f} MB"
+        elif file_size > 1024:
+            size_str = f"{file_size / 1024:.1f} KB"
+        else:
+            size_str = f"{file_size} B"
+        
+        # Determine emoji based on type
+        emoji_map = {
+            "image": "🖼️",
+            "video": "🎥",
+            "audio": "🎵",
+        }
+        emoji = emoji_map.get(media_type, "📄")
+        
+        # Get additional metadata for better description
+        width = metadata.get("width", "")
+        height = metadata.get("height", "")
+        duration = metadata.get("duration", "")
+        
+        # Build dimension/duration info
+        extra_info = []
+        if width and height and media_type == "image":
+            extra_info.append(f"{width}×{height}px")
+        elif duration and media_type in ["video", "audio"]:
+            # Format duration nicely
+            try:
+                dur_seconds = int(float(duration))
+                minutes = dur_seconds // 60
+                seconds = dur_seconds % 60
+                if minutes > 0:
+                    extra_info.append(f"{minutes}m{seconds}s")
+                else:
+                    extra_info.append(f"{seconds}s")
+            except (ValueError, TypeError):
+                pass
+        
+        # Try to get share link from metadata
+        share_token = metadata.get("share-token") or metadata.get("token") or metadata.get("link")
+        if share_token:
+            # Use public share link
+            try:
+                files_client = NextcloudFilesClient(backend_url)
+                share_link = await files_client.get_public_share_link(share_token, file_path)
+                if share_link:
+                    info_part = f"**{file_name}** ({size_str})"
+                    if extra_info:
+                        info_part += f" [{', '.join(extra_info)}]"
+                    # 修复链接格式问题
+                    clean_link = share_link.split('/files?')[0] if '/files?' in share_link else share_link
+                    # 更友好的文件分享消息格式
+                    return f"{emoji} 用户分享了一个文件：{info_part}\n🔗 点击链接查看：{clean_link}"
+            except Exception as e:
+                logger.warning(f"Failed to get share link: {e}")
+        
+        # Fallback: just describe the file with preview info
+        type_names = {
+            "image": "图片",
+            "video": "视频",
+            "audio": "音频文件",
+        }
+        type_name = type_names.get(media_type, "文件")
+        
+        info_part = f"**{file_name}** ({size_str})"
+        if extra_info:
+            info_part += f" [{', '.join(extra_info)}]"
+        
+        preview_status = "✅ 可预览" if preview_available else "❌ 无预览"
+        
+        # 更友好的文件描述消息
+        return f"{emoji} 用户分享了{type_name}：{info_part} ({preview_status})"
+    
+    async def _handle_media_content_parts(
+        self,
+        to_handle: str,
+        parts: list,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Handle media content parts (files, images, videos, audio).
+        
+        Args:
+            to_handle: Destination handle
+            parts: List of content parts with file information
+            meta: Additional metadata
+        """
+        backend_url = (meta or {}).get("backend_url", "")
+        if not backend_url:
+            logger.warning("Cannot handle media file: no backend_url")
+            return
+        
+        # Try to get original content_parts from meta first
+        original_parts = (meta or {}).get('original_content_parts', [])
+        if original_parts:
+            parts = original_parts
+            logger.info(f"Using original content_parts: {[p.get('file_name', 'unknown') if isinstance(p, dict) else 'FileContent' for p in parts]}")
+        else:
+            # Fallback: try to get from request content if parts are FileContent objects
+            logger.info("No original content_parts in meta, using current parts")
+            logger.info(f"Current parts type: {[type(p).__name__ for p in parts]}")
+            for i, part in enumerate(parts):
+                logger.info(f"Part {i}: {part}")
+        
+        for part in parts:
+            part_type = getattr(part, "type", None) if hasattr(part, "type") else part.get("type")
+            
+            # Handle both dict and FileContent object
+            is_file = (
+                (hasattr(part, 'type') and hasattr(part.type, 'name') and part.type.name == 'FILE') or
+                (hasattr(part, 'type') and part.type == ContentType.FILE) or
+                part_type == "file" or
+                part_type == ContentType.FILE
+            )
+            
+            if is_file:
+                # Extract file information from FileContent object or dict
+                # Handle both FileContent objects and dictionaries
+                if hasattr(part, '__dict__'):
+                    # FileContent object - try multiple attribute names
+                    logger.info(f"FileContent attributes: {dir(part)}")
+                    
+                    # Debug: Check actual attribute values
+                    filename_val = getattr(part, "filename", "NOT_FOUND")
+                    file_name_val = getattr(part, "file_name", "NOT_FOUND")
+                    logger.info(f"filename attribute value: {filename_val}")
+                    logger.info(f"file_name attribute value: {file_name_val}")
+                    
+                    file_info = {
+                        "type": getattr(part, "file_type", None) or 
+                                getattr(part, "type", "file"),
+                        "name": getattr(part, "file_name", None) or 
+                               getattr(part, "filename", None) or 
+                               "unknown",
+                        "path": getattr(part, "file_path", None) or 
+                               getattr(part, "filepath", None) or 
+                               getattr(part, "path", ""),
+                        "size": getattr(part, "size", 0),
+                        "mime_type": getattr(part, "mime_type", None) or 
+                                   getattr(part, "mimetype", ""),
+                        "preview_available": getattr(part, "preview_available", False),
+                        "metadata": getattr(part, "metadata", {}),
+                    }
+                    logger.info(f"Extracted file_info: name={file_info['name']}, size={file_info['size']}")
+                else:
+                    # Dictionary format
+                    file_info = {
+                        "type": part.get("file_type", part.get("type", "file")),
+                        "name": part.get("file_name", part.get("filename", "unknown")),
+                        "path": part.get("file_path", part.get("filepath", "")),
+                        "size": part.get("size", 0),
+                        "mime_type": part.get("mime_type", ""),
+                        "preview_available": part.get("preview_available", False),
+                        "metadata": part.get("metadata", {}),
+                    }
+                
+                logger.info(f"Handling media file: {file_info['name']}")
+                
+                # Build and send media message
+                media_message = await self._build_media_message(file_info, backend_url)
+                await self.send(to_handle, media_message, meta)
 
     async def _run_process_loop(
         self,
@@ -548,13 +917,83 @@ class NextcloudTalkChannel(BaseChannel):
         Override _run_process_loop to batch messages for rate limiting.
         Nextcloud Talk Bot API has rate limits, so we collect all messages
         and send them at the end as a single message.
+        Also handles media files (images, videos, audio).
         """
         from agentscope_runtime.engine.schemas.agent_schemas import RunStatus
+        
+        logger.info(f"_run_process_loop: STARTED for to_handle={to_handle}")
         
         session_id = getattr(request, "session_id", "") or ""
         bot_prefix = send_meta.get("bot_prefix", "") or getattr(
             self, "bot_prefix", "",
         )
+        
+        # Check if this is a media file request
+        # content_parts are stored in request.input[0].content (Message.content)
+        # But we should use the original content_parts from the payload to preserve file info
+        content_parts = []
+        
+        # First try to get from original payload meta (preserved original dict data)
+        original_content_parts = (send_meta or {}).get('original_content_parts', [])
+        if original_content_parts:
+            content_parts = original_content_parts
+            logger.info(f"Using preserved original content_parts: {len(content_parts)} items")
+        else:
+            # Fallback: try to extract from request input
+            if hasattr(request, "input") and request.input and len(request.input) > 0:
+                first_message = request.input[0]
+                if hasattr(first_message, "content"):
+                    content_parts = first_message.content or []
+                    logger.info(f"Using request content: {len(content_parts)} items")
+            
+            # Last resort: try to get file info directly from send_meta
+            if not content_parts and send_meta:
+                # Look for file information in meta
+                file_info = send_meta.get('file_info')
+                if file_info:
+                    content_parts = [file_info]
+                    logger.info(f"Using file_info from meta: {file_info}")
+        
+        logger.info(f"_run_process_loop: content_parts from message.content={content_parts}")
+        
+        # Convert dict content_parts to runtime Content objects if needed
+        # But preserve original dict data for media files to avoid property loss
+        converted_parts = []
+        for p in content_parts:
+            if isinstance(p, dict):
+                # Convert dict to appropriate Content type
+                part_type = p.get("type")
+                if part_type == "file":
+                    # For media files, keep the original dict to preserve all properties
+                    converted_parts.append(p)  # Keep as dict
+                elif part_type == "text":
+                    from agentscope_runtime.engine.schemas.message_schemas import TextContent
+                    converted_parts.append(TextContent(
+                        type=ContentType.TEXT,
+                        text=p.get("text", ""),
+                    ))
+                else:
+                    logger.warning(f"Unknown content part type: {part_type}")
+                    converted_parts.append(p)  # Keep original
+            else:
+                converted_parts.append(p)
+        
+        content_parts = converted_parts
+        logger.info(f"_run_process_loop: converted content_parts={content_parts}")
+        
+        has_media = any(
+            (getattr(p, "type", None) == ContentType.FILE or
+             (hasattr(p, 'type') and p.type.name == 'FILE') or
+             (isinstance(p, dict) and p.get("type") == "file"))
+            for p in content_parts
+        )
+        logger.info(f"_run_process_loop: has_media={has_media}")
+        
+        # 移除直接的媒体处理，让Agent参与处理包含媒体文件的消息
+        # if has_media:
+        #     # Handle media files directly
+        #     await self._handle_media_content_parts(to_handle, content_parts, send_meta)
+        #     return
         
         # Collect all messages
         all_messages: List[str] = []

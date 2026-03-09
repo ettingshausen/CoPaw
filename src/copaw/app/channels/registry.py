@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-<<<<<<< HEAD
 _BUILTIN_SPECS: dict[str, tuple[str, str]] = {
     "imessage": (".imessage", "IMessageChannel"),
     "discord": (".discord_", "DiscordChannel"),

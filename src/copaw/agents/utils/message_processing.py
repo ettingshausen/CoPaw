@@ -11,7 +11,7 @@ import os
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from agentscope.message import Msg
 
@@ -110,6 +110,22 @@ def _extract_source_and_filename(block: dict, block_type: str):
     return source, filename
 
 
+def _extract_source_and_filename_from_object(block: Any, block_type: str):
+    """Extract source and filename from FileContent or other Content objects."""
+    from agentscope_runtime.engine.schemas.agent_schemas import FileContent
+
+    if isinstance(block, FileContent) and block_type == "file":
+        # FileContent has file_url attribute instead of source.url
+        source = None
+        if block.file_url:
+            source = {"type": "url", "url": block.file_url}
+
+        filename = block.filename
+        return source, filename
+
+    return None, None
+
+
 def _media_type_from_path(path: str) -> str:
     """Infer audio media_type from file path suffix."""
     ext = (os.path.splitext(path)[1] or "").lower()
@@ -169,12 +185,26 @@ async def _process_single_block(
         Optional[str]: The local path if download was successful,
         None otherwise.
     """
-    block_type = block.get("type")
+    # Check if it's a Content object (FileContent, ImageContent, etc.)
+    from agentscope_runtime.engine.schemas.agent_schemas import Content
+
+    is_content_object = isinstance(block, Content)
+    logger.info(f"Processing block: is_content_object={is_content_object}, block_type={type(block).__name__}, content={str(block)[:200]}")
+
+    block_type = getattr(block, "type", None) if is_content_object else block.get("type")
     if not isinstance(block_type, str):
         return None
 
-    source, filename = _extract_source_and_filename(block, block_type)
+    # Extract source and filename from dict or object
+    if is_content_object:
+        source, filename = _extract_source_and_filename_from_object(block, block_type)
+        logger.info(f"Extracted from Content object: source={source}, filename={filename}")
+    else:
+        source, filename = _extract_source_and_filename(block, block_type)
+        logger.info(f"Extracted from dict: source={source}, filename={filename}")
+
     if source is None:
+        logger.warning(f"source is None for block: {block}")
         return None
 
     # Normalize: when source is "base64" but data is a local path (e.g.
@@ -190,22 +220,31 @@ async def _process_single_block(
             and os.path.isfile(data)
             and _is_allowed_media_path(data)
         ):
-            block["source"] = {
+            source = {
                 "type": "url",
                 "url": Path(data).as_uri(),
                 "media_type": _media_type_from_path(data),
             }
-            source = block["source"]
 
     try:
         local_path = await _process_single_file_block(source, filename)
 
         if local_path:
-            message_content[index] = _update_block_with_local_path(
-                block,
-                block_type,
-                local_path,
-            )
+            if is_content_object:
+                # For Content objects, replace with dict containing local path
+                # This matches the expected dict format for later processing
+                message_content[index] = _update_block_with_local_path(
+                    {"type": block_type, "filename": filename or ""},
+                    block_type,
+                    local_path,
+                )
+            else:
+                # For dict blocks, update in place
+                message_content[index] = _update_block_with_local_path(
+                    block,
+                    block_type,
+                    local_path,
+                )
             logger.debug(
                 "Updated %s block with local path: %s",
                 block_type,
@@ -215,16 +254,18 @@ async def _process_single_block(
         else:
             error_block = _handle_download_failure(block_type)
             if error_block:
+                # Replace both dict blocks and Content objects with error blocks
                 message_content[index] = error_block
             return None
 
     except Exception as e:
         logger.error("Failed to process %s block: %s", block_type, e)
-        if block_type == "file":
-            message_content[index] = {
-                "type": "text",
-                "text": f"[Error: Failed to download file - {e}]",
-            }
+        error_block = {
+            "type": "text",
+            "text": f"[Error: Failed to download file - {e}]",
+        }
+        # Replace both types with error block
+        message_content[index] = error_block
         return None
 
 

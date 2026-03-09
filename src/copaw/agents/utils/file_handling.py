@@ -202,7 +202,100 @@ async def download_file_from_url(
         `str`:
             The local file path.
     """
+    logger.info(f"[file_handling] download_file_from_url: url={url[:60]}..., filename={filename}")
     try:
+        # Check if this is a Nextcloud URL that needs special handling
+        # Nextcloud share URLs like /s/... need authentication
+        is_nextcloud_share = '/nextcloud/s/' in url or '/s/' in url
+        
+        # For Nextcloud URLs, try to use NextcloudFilesClient if credentials are available
+        # Support both share URLs (/s/...) and WebDAV URLs (/remote.php/dav/files/...)
+        is_nextcloud_url = '/nextcloud/' in url or '/remote.php/dav/files/' in url
+
+        if is_nextcloud_url:
+            try:
+                # Extract base URL from the URL
+                # Handle both share URLs and WebDAV URLs
+                parsed = urllib.parse.urlparse(url)
+                split_path = parsed.path.split('/')
+                base_parts = []
+
+                # For WebDAV URL: /remote.php/dav/files/{user}/{path}
+                # For share URL: /s/{token}
+                if '/remote.php/dav/files/' in url:
+                    # WebDAV URL - extract base up to /remote
+                    for part in split_path:
+                        if part == 'remote.php':
+                            break
+                        base_parts.append(part)
+                    base_path = '/'.join(base_parts)
+                    base_url = f"{parsed.scheme}://{parsed.netloc}{base_path}"
+
+                    is_webdav = True
+                else:
+                    # Share URL - extract base up to /s
+                    for part in split_path:
+                        if part == 's':
+                            break
+                        base_parts.append(part)
+                    base_path = '/'.join(base_parts)
+                    base_url = f"{parsed.scheme}://{parsed.netloc}{base_path}"
+
+                    is_webdav = False
+
+                # Try to get Nextcloud credentials from environment
+                nc_username = os.getenv("NEXTCLOUD_USERNAME", "")
+                nc_password = os.getenv("NEXTCLOUD_PASSWORD", "")
+
+                if nc_username and nc_password:
+                    logger.info(f"Using NextcloudFilesClient for download: {url} (is_webdav={is_webdav})")
+                    from app.channels.nextcloud_talk.files_client import NextcloudFilesClient
+
+                    # Prepare local file path
+                    download_path = Path(download_dir)
+                    download_path.mkdir(parents=True, exist_ok=True)
+
+                    if not filename:
+                        url_filename = os.path.basename(parsed.path)
+                        filename = url_filename if url_filename else f"file_{hashlib.md5(url.encode()).hexdigest()}"
+
+                    local_file_path = download_path / filename
+
+                    # Download using NextcloudFilesClient
+                    client = NextcloudFilesClient(base_url, nc_username, nc_password)
+
+                    logger.info(f"[file_handling] Creating NextcloudFilesClient: base_url={base_url[:40]}..., username={nc_username[:10]}...")
+                    logger.info(f"[file_handling] About to call client.download_file: url={url[:60]}..., local_path={str(local_file_path)[:60]}")
+
+                    if is_webdav:
+                        # For WebDAV URL, download directly (credentials already in session)
+                        success = await client.download_file(url, str(local_file_path))
+                    else:
+                        # For share URL, also try direct download with auth
+                        success = await client.download_file(url, str(local_file_path))
+
+                    await client.close()
+
+                    if success and local_file_path.exists():
+                        # Verify file is not HTML
+                        with open(local_file_path, 'rb') as f:
+                            header = f.read(16)
+                            if header.startswith(b'<!DOCTYPE') or header.startswith(b'<html'):
+                                raise ValueError("Downloaded file is HTML, not expected binary data")
+
+                        logger.info(f"Successfully downloaded via NextcloudFilesClient: {local_file_path}")
+                        return str(local_file_path.absolute())
+                    else:
+                        logger.warning(f"NextcloudFilesClient download failed (success={success}), returning error")
+                        # Don't fallback to wget/curl for WebDAV URLs - they need authentication
+                        raise RuntimeError(f"NextcloudFilesClient download failed for URL: {url}")
+                else:
+                    logger.info("No Nextcloud credentials found, using wget/curl for download")
+            except Exception as nc_error:
+                logger.debug(f"Nextcloud auth download failed: {nc_error}, falling back to wget/curl")
+                # Continue to fallback method
+        
+        # Standard download path (non-Nextcloud or fallback)
         parsed = urllib.parse.urlparse(url)
         local = _resolve_local_path(url, parsed)
         if local is not None:
@@ -223,6 +316,14 @@ async def download_file_from_url(
             raise FileNotFoundError("Downloaded file does not exist")
         if local_file_path.stat().st_size == 0:
             raise ValueError("Downloaded file is empty")
+        
+        # Verify file is not HTML (check for login page)
+        with open(local_file_path, 'rb') as f:
+            header = f.read(16)
+            if header.startswith(b'<!DOCTYPE') or header.startswith(b'<html'):
+                logger.warning(f"Downloaded file appears to be HTML (login page) for URL: {url}")
+                raise ValueError(f"Downloaded file is HTML (login page), not expected binary data. URL may require authentication.")
+        
         # DingTalk (and similar) return URLs that save as .file; replace with
         # real extension. Try HEAD first; if that fails (e.g. OSS), use magic.
         if local_file_path.suffix == ".file":
