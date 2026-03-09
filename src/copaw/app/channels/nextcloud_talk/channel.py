@@ -84,11 +84,15 @@ class NextcloudTalkChannel(BaseChannel):
         password: str = "",
         on_reply_sent: OnReplySent = None,
         show_tool_details: bool = True,
+        filter_tool_messages: bool = False,
+        filter_thinking: bool = False,
     ):
         super().__init__(
             process,
             on_reply_sent=on_reply_sent,
             show_tool_details=show_tool_details,
+            filter_tool_messages=filter_tool_messages,
+            filter_thinking=filter_thinking,
         )
         self.enabled = enabled
         self.webhook_secret = webhook_secret
@@ -176,6 +180,8 @@ class NextcloudTalkChannel(BaseChannel):
         config: Any,
         on_reply_sent: OnReplySent = None,
         show_tool_details: bool = True,
+        filter_tool_messages: bool = False,
+        filter_thinking: bool = False,
     ) -> "NextcloudTalkChannel":
         return cls(
             process=process,
@@ -189,6 +195,8 @@ class NextcloudTalkChannel(BaseChannel):
             password=getattr(config, "password", ""),
             on_reply_sent=on_reply_sent,
             show_tool_details=show_tool_details,
+            filter_tool_messages=filter_tool_messages,
+            filter_thinking=filter_thinking,
         )
 
     # ---------------------------
