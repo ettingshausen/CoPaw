@@ -184,7 +184,7 @@ async def download_file_from_base64(
 async def download_file_from_url(
     url: str,
     filename: Optional[str] = None,
-    download_dir: str = "downloads",
+    download_dir: str = "~/.copaw/media",
 ) -> str:
     """
     Download a file from URL to local download directory using wget or curl.
@@ -204,9 +204,12 @@ async def download_file_from_url(
     """
     logger.info(f"[file_handling] download_file_from_url: url={url[:60]}..., filename={filename}")
     try:
-        # Check if this is a Nextcloud URL that needs special handling
-        # Nextcloud share URLs like /s/... need authentication
-        is_nextcloud_share = '/nextcloud/s/' in url or '/s/' in url
+        from pathlib import Path
+        import hashlib
+        
+        # Expand download directory path
+        download_path = Path(download_dir).expanduser()
+        download_path.mkdir(parents=True, exist_ok=True)
         
         # For Nextcloud URLs, try to use NextcloudFilesClient if credentials are available
         # Support both share URLs (/s/...) and WebDAV URLs (/remote.php/dav/files/...)
@@ -271,15 +274,13 @@ async def download_file_from_url(
                     # Use absolute import instead of relative import
                     from copaw.app.channels.nextcloud_talk.files_client import NextcloudFilesClient
 
-                    # Prepare local file path
-                    download_path = Path(download_dir)
-                    download_path.mkdir(parents=True, exist_ok=True)
-
+                    # Prepare local file path using expanded download directory
                     if not filename:
                         url_filename = os.path.basename(parsed.path)
                         filename = url_filename if url_filename else f"file_{hashlib.md5(url.encode()).hexdigest()}"
-
+                    
                     local_file_path = download_path / filename
+                    logger.info(f"[file_handling] Saving file to: {local_file_path}")
 
                     # Download using NextcloudFilesClient
                     client = NextcloudFilesClient(base_url, nc_username, nc_password)

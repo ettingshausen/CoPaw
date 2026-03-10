@@ -82,6 +82,7 @@ class NextcloudTalkChannel(BaseChannel):
         bot_prefix: str = "[BOT] ",
         username: str = "",
         password: str = "",
+        media_dir: str = "~/.copaw/media/nextcloud_talk",
         on_reply_sent: OnReplySent = None,
         show_tool_details: bool = True,
         filter_tool_messages: bool = False,
@@ -100,6 +101,10 @@ class NextcloudTalkChannel(BaseChannel):
         # Store credentials for file downloads
         self.nc_username = username
         self.nc_password = password
+        
+        # Setup media directory for downloaded files
+        self._media_dir = Path(media_dir).expanduser()
+        self._media_dir.mkdir(parents=True, exist_ok=True)
 
         # Log secret length for debugging (don't log the actual secret)
         logger.info(
