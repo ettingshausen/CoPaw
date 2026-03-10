@@ -393,10 +393,14 @@ class NextcloudTalkChannel(BaseChannel):
             if t == 'file':
                 return True
             
-            # Case 2: type is ContentType.FILE enum
-            from agentscope_runtime.engine.schemas.message_schemas import ContentType
-            if t == ContentType.FILE:
-                return True
+            # Case 2: type is ContentType.FILE enum (if available)
+            try:
+                from agentscope_runtime.engine.schemas.message_schemas import ContentType
+                if t == ContentType.FILE:
+                    return True
+            except ImportError:
+                # If the module is not available, skip this check
+                pass
             
             # Case 3: type has name attribute (Enum)
             if hasattr(t, 'name') and t.name == 'FILE':
@@ -991,7 +995,7 @@ class NextcloudTalkChannel(BaseChannel):
         
         has_media = any(
             (getattr(p, "type", None) == ContentType.FILE or
-             (hasattr(p, 'type') and p.type.name == 'FILE') or
+             (hasattr(p, 'type') and getattr(p.type, 'name', None) == 'FILE') or
              (isinstance(p, dict) and p.get("type") == "file"))
             for p in content_parts
         )

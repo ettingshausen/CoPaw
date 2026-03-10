@@ -340,7 +340,25 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
 
         # 入队
         if self._enqueue_callback:
-            self._enqueue_callback(channel_payload)
+            # Schedule the async callback in the main event loop
+            import asyncio
+            try:
+                # 获取主事件循环（由应用启动时创建）
+                loop = asyncio.get_running_loop()
+                # 在主线程的事件循环中调度协程
+                asyncio.run_coroutine_threadsafe(
+                    self._enqueue_callback(channel_payload),
+                    loop
+                )
+                logger.info(f"Scheduled message processing for: {actor_name}")
+            except RuntimeError:
+                # 如果没有运行中的事件循环，在新线程中运行
+                def run_in_thread():
+                    asyncio.run(self._enqueue_callback(channel_payload))
+                import threading
+                thread = threading.Thread(target=run_in_thread, daemon=True)
+                thread.start()
+                logger.info(f"Started thread for message processing: {actor_name}")
             return True
         else:
             logger.warning("nextcloud_talk webhook: no enqueue callback set")
