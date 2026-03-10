@@ -80,6 +80,7 @@ async def _process_single_file_block(
             local_path = await download_file_from_url(
                 url,
                 filename,
+                "~/.copaw/media/nextcloud_talk",
             )
             logger.debug(
                 "Processed URL file block: %s -> %s",
