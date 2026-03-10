@@ -277,30 +277,46 @@ async def process_file_and_media_blocks_in_message(msg) -> None:
     Args:
         msg: The message object (Msg or list[Msg]) to process.
     """
+    logger.info(f"[message_processing] process_file_and_media_blocks_in_message called with msg type: {type(msg)}")
+    
     messages = (
         [msg] if isinstance(msg, Msg) else msg if isinstance(msg, list) else []
     )
+    
+    logger.info(f"[message_processing] Processing {len(messages)} messages")
 
     for message in messages:
         if not isinstance(message, Msg):
+            logger.info(f"[message_processing] Skipping non-Msg object: {type(message)}")
             continue
 
         if not isinstance(message.content, list):
+            logger.info(f"[message_processing] Message content is not list: {type(message.content)}")
             continue
 
+        logger.info(f"[message_processing] Processing message with {len(message.content)} content parts")
+        
         downloaded_files = []
 
         for i, block in enumerate(message.content):
+            logger.info(f"[message_processing] Processing block {i}: type={type(block)}")
+            
             if not isinstance(block, dict):
+                logger.info(f"[message_processing] Block {i} is not dict, skipping")
                 continue
 
             block_type = block.get("type")
+            logger.info(f"[message_processing] Block {i} type: {block_type}")
+            
             if block_type not in ["file", "image", "audio", "video"]:
+                logger.info(f"[message_processing] Block {i} type {block_type} not in target types, skipping")
                 continue
 
+            logger.info(f"[message_processing] About to process {block_type} block {i}")
             local_path = await _process_single_block(message.content, i, block)
             if local_path:
                 downloaded_files.append((i, local_path))
+                logger.info(f"[message_processing] Successfully downloaded file to: {local_path}")
 
         if downloaded_files:
             lang = load_config().agents.language
@@ -312,6 +328,9 @@ async def process_file_and_media_blocks_in_message(msg) -> None:
                 )
                 text_block = {"type": "text", "text": text}
                 message.content.insert(i + 1, text_block)
+                logger.info(f"[message_processing] Added download notification: {text}")
+        else:
+            logger.info(f"[message_processing] No files were downloaded for this message")
 
 
 def is_first_user_interaction(messages: list) -> bool:

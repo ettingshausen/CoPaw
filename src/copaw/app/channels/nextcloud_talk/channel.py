@@ -97,21 +97,9 @@ class NextcloudTalkChannel(BaseChannel):
         self.enabled = enabled
         self.webhook_secret = webhook_secret
 
-        # Set environment variables for Nextcloud authentication
-        # These will be used by file_handling.download_file_from_url
-        if username and password:
-            os.environ["NEXTCLOUD_USERNAME"] = username
-            os.environ["NEXTCLOUD_PASSWORD"] = password
-            logger.info("nextcloud_talk: Set NEXTCLOUD_USERNAME and NEXTCLOUD_PASSWORD for authenticated file downloads")
-
-        # Set api_user for WebDAV access
-        # Use username as api_user for accessing files via WebDAV
-        if username:
-            self.api_user = username
-            logger.info(f"nextcloud_talk: Using username as api_user for WebDAV: {username}")
-        else:
-            self.api_user = ""
-            logger.warning("nextcloud_talk: No username provided, file downloads may fail")
+        # Store credentials for file downloads
+        self.nc_username = username
+        self.nc_password = password
 
         # Log secret length for debugging (don't log the actual secret)
         logger.info(
@@ -445,6 +433,7 @@ class NextcloudTalkChannel(BaseChannel):
         self._webhook_server.set_webhook_secret(self.webhook_secret)
         self._webhook_server.set_bot_prefix(self.bot_prefix)
         self._webhook_server.set_api_user(self.api_user)
+        self._webhook_server.set_credentials(self.nc_username, self.nc_password)
 
     # ---------------------------
     # Lifecycle

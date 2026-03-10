@@ -539,7 +539,24 @@ class CoPawAgent(ReActAgent):
         """
         # Process file and media blocks in messages
         if msg is not None:
+            logger.info(f"[ReactAgent] About to process file/media blocks for message type: {type(msg)}")
+            if isinstance(msg, list):
+                logger.info(f"[ReactAgent] Message list length: {len(msg)}")
+                for i, m in enumerate(msg):
+                    logger.info(f"[ReactAgent] Message {i}: type={type(m)}, has content={hasattr(m, 'content')}")
+                    if hasattr(m, 'content'):
+                        logger.info(f"[ReactAgent] Content type: {type(m.content)}, length: {len(m.content) if isinstance(m.content, list) else 'N/A'}")
+                        for j, part in enumerate(m.content):
+                            logger.info(f"[ReactAgent] Part {j}: type={type(part)}, part_type={getattr(part, 'type', 'unknown')}")
+            else:
+                logger.info(f"[ReactAgent] Single message: type={type(msg)}, has content={hasattr(msg, 'content')}")
+                if hasattr(msg, 'content'):
+                    logger.info(f"[ReactAgent] Content type: {type(msg.content)}, length: {len(msg.content) if isinstance(msg.content, list) else 'N/A'}")
+                    for j, part in enumerate(msg.content):
+                        logger.info(f"[ReactAgent] Part {j}: type={type(part)}, part_type={getattr(part, 'type', 'unknown')}")
+            
             await process_file_and_media_blocks_in_message(msg)
+            logger.info("[ReactAgent] Finished processing file/media blocks")
 
         # Check if message is a system command
         last_msg = msg[-1] if isinstance(msg, list) else msg

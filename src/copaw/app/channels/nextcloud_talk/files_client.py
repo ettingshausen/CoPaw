@@ -32,6 +32,36 @@ class NextcloudFilesClient:
         self.username = username
         self.password = password
         self._session: Optional[aiohttp.ClientSession] = None
+        
+        # Load credentials from config if not provided
+        if not username or not password:
+            self._load_credentials_from_config()
+    
+    def _load_credentials_from_config(self):
+        """Load Nextcloud credentials from config file."""
+        try:
+            import json
+            from pathlib import Path
+            
+            config_path = Path.home() / '.copaw' / 'config.json'
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    
+                nc_config = config.get('channels', {}).get('nextcloud_talk', {})
+                if nc_config:
+                    self.username = nc_config.get('username', '')
+                    self.password = nc_config.get('password', '')
+                    
+                    if self.username and self.password:
+                        logger.info(f"Loaded Nextcloud credentials from config: username={self.username[:3]}...")
+                    else:
+                        logger.warning("Nextcloud credentials not found in config")
+            else:
+                logger.warning(f"Config file not found: {config_path}")
+                
+        except Exception as e:
+            logger.error(f"Failed to load Nextcloud credentials from config: {e}")
 
     def build_webdav_url(self, api_user: str, file_path: str) -> Optional[str]:
         """
@@ -73,7 +103,20 @@ class NextcloudFilesClient:
     async def get_session(self) -> aiohttp.ClientSession:
         """Get or create HTTP session."""
         if self._session is None:
+            logger.info(f"Creating session with username='{self.username}', password present={bool(self.password)})")
+            
+            # Debug environment variables
+            import os
+            env_username = os.environ.get('NEXTCLOUD_USERNAME', 'NOT_SET')
+            env_password = os.environ.get('NEXTCLOUD_PASSWORD', 'NOT_SET')
+            logger.info(f"Environment vars: NEXTCLOUD_USERNAME={env_username[:3]}..., NEXTCLOUD_PASSWORD={'SET' if env_password != 'NOT_SET' else 'NOT_SET'})")
+            
             auth = aiohttp.BasicAuth(self.username, self.password) if self.username else None
+            if auth:
+                logger.info(f"Created BasicAuth with username: {self.username[:3]}...")
+            else:
+                logger.warning("No authentication credentials provided")
+            
             self._session = aiohttp.ClientSession(auth=auth)
         return self._session
     
@@ -239,32 +282,92 @@ class NextcloudFilesClient:
 
             logger.info(f"Nextcloud download auth: is_share={is_share_url}, is_webdav={is_webdav_url}, needs_auth={needs_auth}, username={self.username[:2]}...")
 
-            # Prepare headers
+            # Prepare headers - DON'T add Authorization header when session already has auth
             headers = {}
-            # For share URLs and WebDAV URLs, use Authorization header if credentials are available
-            if needs_auth:
+            # For share URLs, we need to add Authorization header manually
+            # But for WebDAV URLs, the session already has BasicAuth configured
+            if needs_auth and is_share_url:
                 import base64
                 credentials = f"{self.username}:{self.password}"
                 encoded_credentials = base64.b64encode(credentials.encode('utf-8')).decode('ascii')
                 headers['Authorization'] = f"Basic {encoded_credentials}"
-                logger.info(f"Added Authorization header for WebDAV download")
+                logger.info(f"Added Authorization header for share URL download")
+            elif needs_auth and is_webdav_url:
+                logger.info(f"Using session BasicAuth for WebDAV URL download")
+            
 
-            # Download with aiohttp (preserves any auth headers)
-            import aiohttp
+            # Download with aiohttp (using the authenticated session)
             timeout = aiohttp.ClientTimeout(total=60)
-            async with aiohttp.ClientSession(timeout=timeout) as http_session:
-                async with http_session.get(url, headers=headers) as resp:
+            logger.info(f"Making authenticated request to: {url}")
+            logger.info(f"Using session auth: username={self.username[:3]}..., password present={bool(self.password)})")
+            
+            async with session.get(url, headers=headers, timeout=timeout) as resp:
+                    logger.info(f"Response status: {resp.status}")
+                    logger.info(f"Response headers: {dict(resp.headers)}")
+                    
                     if resp.status != 200:
                         resp_text = await resp.text()
-                        logger.error(f"Failed to download file: status={resp.status}, resp={resp_text[:200]}")
+                        logger.error(f"Failed to download file: status={resp.status}, resp={resp_text[:500]}")
+                        
+                        # Log more details for debugging
+                        if resp.status == 401:
+                            logger.error("401 Unauthorized - Authentication failed")
+                        elif resp.status == 404:
+                            logger.error("404 Not Found - File not found")
+                        elif resp.status == 403:
+                            logger.error("403 Forbidden - Access denied")
+                        
                         return False
 
                     # Verify content is not HTML (login page)
                     content = await resp.read()
+                    logger.info(f"Downloaded content size: {len(content)} bytes")
+                    
+                    # Detailed content analysis
                     if content.startswith(b'<!DOCTYPE') or content.startswith(b'<html'):
                         logger.error(f"Downloaded content is HTML (login page), not binary file: url={url}")
+                        logger.error(f"First 500 bytes of content: {content[:500]}")
                         return False
-
+                    
+                    # Check for XML error responses
+                    if content.startswith(b'<?xml'):
+                        logger.error(f"Downloaded content is XML (likely error response): url={url}")
+                        logger.error(f"First 500 bytes of XML content: {content[:500]}")
+                        return False
+                    
+                    # Validate image file signatures
+                    if url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                        # PNG signature: \x89PNG
+                        # JPEG signature: \xff\xd8\xff
+                        # GIF signature: GIF87a or GIF89a
+                        png_sig = b'\x89PNG\r\n\x1a\n'
+                        jpg_sig = b'\xff\xd8\xff'
+                        gif_sig = b'GIF8'
+                        webp_sig = b'RIFF'
+                        
+                        valid_image = (
+                            content.startswith(png_sig) or
+                            content.startswith(jpg_sig) or
+                            content.startswith(gif_sig) or
+                            content.startswith(webp_sig)
+                        )
+                        
+                        if not valid_image:
+                            logger.error(f"Downloaded content doesn't match expected image format: url={url}")
+                            logger.error(f"Content starts with: {content[:20]}")
+                            logger.error(f"Expected image signatures not found")
+                            return False
+                        else:
+                            logger.info(f"Valid image file signature confirmed for: {url}")
+                    
+                    # Check content type
+                    content_type = resp.headers.get('content-type', 'unknown')
+                    logger.info(f"Content-Type: {content_type}")
+                    
+                    # Additional validation for image files
+                    if 'image' in content_type.lower():
+                        logger.info(f"Confirmed image content type: {content_type}")
+                    
                     # Save to file
                     local_path_obj = Path(local_path)
                     local_path_obj.parent.mkdir(parents=True, exist_ok=True)
@@ -312,21 +415,42 @@ class NextcloudFilesClient:
 
             # Download file
             timeout = aiohttp.ClientTimeout(total=60)
+            logger.info(f"WebDAV request to: {webdav_url}")
+            logger.info(f"Using session with auth: username={self.username[:2]}... password={'*' * len(self.password) if self.password else 'None'}")
+            
             async with session.get(webdav_url, timeout=timeout) as resp:
+                logger.info(f"WebDAV Response status: {resp.status}")
+                logger.info(f"WebDAV Response headers: {dict(resp.headers)}")
+                
                 if resp.status != 200:
                     resp_text = await resp.text()
                     logger.error(
-                        f"WebDAV download failed: status={resp.status}, url={webdav_url}, resp={resp_text[:200]}"
+                        f"WebDAV download failed: status={resp.status}, url={webdav_url}, resp={resp_text[:500]}"
                     )
+                    
+                    # More detailed error logging
+                    if resp.status == 401:
+                        logger.error("WebDAV 401 Unauthorized - Check username/password")
+                    elif resp.status == 404:
+                        logger.error("WebDAV 404 Not Found - File path may be incorrect")
+                    elif resp.status == 403:
+                        logger.error("WebDAV 403 Forbidden - Insufficient permissions")
+                    
                     return False
 
                 # Read content
                 content = await resp.read()
-
+                logger.info(f"WebDAV downloaded content size: {len(content)} bytes")
+                
                 # Verify content is not HTML (shouldn't happen with WebDAV)
                 if content.startswith(b'<!DOCTYPE') or content.startswith(b'<html'):
-                    logger.error(f"Downloaded content is HTML (unexpected): url={webdav_url}")
+                    logger.error(f"WebDAV downloaded content is HTML (unexpected): url={webdav_url}")
+                    logger.error(f"First 200 bytes: {content[:200]}")
                     return False
+                
+                # Check content type
+                content_type = resp.headers.get('content-type', 'unknown')
+                logger.info(f"WebDAV Content-Type: {content_type}")
 
                 # Save to file
                 local_path_obj = Path(local_path)

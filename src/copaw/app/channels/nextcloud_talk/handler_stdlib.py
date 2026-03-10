@@ -11,6 +11,7 @@ from .content_utils import (
     NextcloudTalkContentParser,
     session_param_from_token,
 )
+from .files_client import NextcloudFilesClient
 from .utils import (
     verify_request_signature,
     extract_backend_url,
@@ -37,6 +38,8 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
     _webhook_secret: str = ""
     _bot_prefix: str = ""
     _api_user: str = ""  # Same as username (BOT account for WebDAV access)
+    _nc_username: str = ""  # Nextcloud username for authentication
+    _nc_password: str = ""  # Nextcloud password for authentication
 
     def __init__(self, *args, **kwargs):
         """
@@ -52,6 +55,8 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
         self._webhook_secret = self.__class__._webhook_secret
         self._bot_prefix = self.__class__._bot_prefix
         self._api_user = self.__class__._api_user
+        self._nc_username = self.__class__._nc_username
+        self._nc_password = self.__class__._nc_password
         super().__init__(*args, **kwargs)
 
     def log_message(self, format, *args):
@@ -220,11 +225,13 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
                 logger.info(f"Building WebDAV URL: base_url={backend_url}, api_user={self._api_user}, file_path={file_path}, filename={filename}")
 
                 # Build WebDAV URL with file_path and filename
-                webdav_url = build_webdav_url(
-                    backend_url, 
-                    self._api_user, 
-                    file_path
+                # Use NextcloudFilesClient to build URL with proper credentials
+                client = NextcloudFilesClient(
+                    backend_url,
+                    self._nc_username,
+                    self._nc_password
                 )
+                webdav_url = client.build_webdav_url(self._api_user, file_path)
                 if webdav_url:
                     logger.info(f"Built WebDAV URL: {webdav_url}")
                 else:
@@ -409,6 +416,11 @@ class StdlibWebhookServer:
     def set_api_user(self, api_user: str):
         """Set the bot API user for WebDAV access."""
         NextcloudTalkWebhookHandler._api_user = api_user
+    
+    def set_credentials(self, username: str, password: str):
+        """Set Nextcloud credentials for file downloads."""
+        NextcloudTalkWebhookHandler._nc_username = username
+        NextcloudTalkWebhookHandler._nc_password = password
 
     def start(self):
         """Start the webhook server in a background thread."""

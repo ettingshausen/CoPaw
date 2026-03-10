@@ -243,13 +243,33 @@ async def download_file_from_url(
 
                     is_webdav = False
 
-                # Try to get Nextcloud credentials from environment
-                nc_username = os.getenv("NEXTCLOUD_USERNAME", "")
-                nc_password = os.getenv("NEXTCLOUD_PASSWORD", "")
+                # Try to get Nextcloud credentials from config file
+                nc_username, nc_password = "", ""
+                try:
+                    import json
+                    from pathlib import Path
+                    
+                    config_path = Path.home() / '.copaw' / 'config.json'
+                    if config_path.exists():
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            config = json.load(f)
+                            nc_config = config.get('channels', {}).get('nextcloud_talk', {})
+                            nc_username = nc_config.get('username', '')
+                            nc_password = nc_config.get('password', '')
+                            
+                            if nc_username and nc_password:
+                                logger.info(f"[file_handling] Loaded Nextcloud credentials from config: username={nc_username[:3]}...")
+                            else:
+                                logger.warning("[file_handling] Nextcloud credentials not found in config")
+                    else:
+                        logger.warning(f"[file_handling] Config file not found: {config_path}")
+                except Exception as e:
+                    logger.error(f"[file_handling] Failed to load Nextcloud credentials from config: {e}")
 
                 if nc_username and nc_password:
                     logger.info(f"Using NextcloudFilesClient for download: {url} (is_webdav={is_webdav})")
-                    from app.channels.nextcloud_talk.files_client import NextcloudFilesClient
+                    # Use absolute import instead of relative import
+                    from copaw.app.channels.nextcloud_talk.files_client import NextcloudFilesClient
 
                     # Prepare local file path
                     download_path = Path(download_dir)
@@ -264,31 +284,24 @@ async def download_file_from_url(
                     # Download using NextcloudFilesClient
                     client = NextcloudFilesClient(base_url, nc_username, nc_password)
 
-                    logger.info(f"[file_handling] Creating NextcloudFilesClient: base_url={base_url[:40]}..., username={nc_username[:10]}...")
-                    logger.info(f"[file_handling] About to call client.download_file: url={url[:60]}..., local_path={str(local_file_path)[:60]}")
-
-                    if is_webdav:
-                        # For WebDAV URL, download directly (credentials already in session)
-                        success = await client.download_file(url, str(local_file_path))
-                    else:
-                        # For share URL, also try direct download with auth
-                        success = await client.download_file(url, str(local_file_path))
-
+                    # If download succeeds, verify it's a real image
+                    success = await client.download_file(url, str(local_file_path))
                     await client.close()
-
+                    
                     if success and local_file_path.exists():
-                        # Verify file is not HTML
+                        # Verify this is a REAL image, not XML error
                         with open(local_file_path, 'rb') as f:
-                            header = f.read(16)
-                            if header.startswith(b'<!DOCTYPE') or header.startswith(b'<html'):
-                                raise ValueError("Downloaded file is HTML, not expected binary data")
-
-                        logger.info(f"Successfully downloaded via NextcloudFilesClient: {local_file_path}")
-                        return str(local_file_path.absolute())
+                            header = f.read(20)
+                            if header.startswith(b'<?xml'):
+                                # This is still the XML error page!
+                                raise RuntimeError("Download returned XML error page instead of image")
+                            elif header.startswith(b'\x89PNG'):
+                                return str(local_file_path.absolute())
+                            else:
+                                raise RuntimeError(f"Unknown file type downloaded: {header[:20]}")
                     else:
-                        logger.warning(f"NextcloudFilesClient download failed (success={success}), returning error")
-                        # Don't fallback to wget/curl for WebDAV URLs - they need authentication
-                        raise RuntimeError(f"NextcloudFilesClient download failed for URL: {url}")
+                        logger.warning(f"NextcloudFilesClient download failed (success={success})")
+                        raise RuntimeError("NextcloudFilesClient download failed")
                 else:
                     logger.info("No Nextcloud credentials found, using wget/curl for download")
             except Exception as nc_error:
