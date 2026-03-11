@@ -468,11 +468,6 @@ class NextcloudTalkChannel(BaseChannel):
             logger.debug("nextcloud_talk channel disabled")
             return
 
-        if not self.webhook_secret:
-            raise RuntimeError(
-                "NEXTCLOUD_TALK_WEBHOOK_SECRET is required when channel is enabled"
-            )
-
         # Load backend URL store from disk
         self._backend_url_store = load_token_store() or {}
 
