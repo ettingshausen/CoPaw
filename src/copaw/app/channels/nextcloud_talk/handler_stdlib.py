@@ -24,6 +24,48 @@ from .constants import (
 
 logger = logging.getLogger(__name__)
 
+# Download filename hint by type (e.g. image -> .png, video -> .mp4)
+FILENAME_HINT_BY_TYPE = {
+    "image": ".png",
+    "video": ".mp4",
+    "audio": ".mp3",
+}
+DEFAULT_FILENAME_HINT = ".file"
+
+
+def nextcloud_content_from_type(
+    media_type: str,
+    local_path: str,
+    filename: str = "",
+) -> dict:
+    """
+    Build content part from Nextcloud media type and local path.
+    
+    Args:
+        media_type: "image", "video", "audio", or "file"
+        local_path: Local file path (already downloaded)
+        filename: Filename for the file
+        
+    Returns:
+        Dict compatible with content_parts format
+    """
+    base = {
+        "type": "file",
+        "filename": filename or f"file_{media_type}",
+        "file_url": local_path,  # Local path, not remote URL!
+    }
+    
+    if media_type == "image":
+        base["file_type"] = "image"
+    elif media_type == "video":
+        base["file_type"] = "video"
+    elif media_type == "audio":
+        base["file_type"] = "audio"
+    else:
+        base["file_type"] = "file"
+    
+    return base
+
 
 class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
     """
@@ -122,6 +164,82 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
             self.send_response(500)
             self.end_headers()
             self.wfile.write(b'{"error":"Internal server error"}')
+
+    async def _download_media_to_local(
+        self,
+        url: str,
+        filename: str,
+        media_type: str,
+        mime_type: str,
+        api_user: str,
+        file_path: str,
+        username: str,
+        password: str,
+        backend_url: str,
+    ) -> str | None:
+        """
+        Download media from Nextcloud to local media_dir.
+        Returns local path or None on failure.
+        """
+        if not url:
+            logger.warning("download_media_to_local: empty URL")
+            return None
+        
+        try:
+            # Prepare local path
+            from pathlib import Path
+            media_dir = Path("~/.copaw/media/nextcloud_talk").expanduser()
+            media_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Determine filename with extension
+            if not filename:
+                filename = f"file_{media_type}"
+            
+            # Add extension based on mime_type or media_type
+            ext_map = {
+                "image/png": ".png",
+                "image/jpeg": ".jpg",
+                "image/gif": ".gif",
+                "image/webp": ".webp",
+                "video/mp4": ".mp4",
+                "video/webm": ".webm",
+                "audio/mpeg": ".mp3",
+                "audio/wav": ".wav",
+                "audio/ogg": ".ogg",
+            }
+            suffix = ext_map.get(mime_type.lower()) or FILENAME_HINT_BY_TYPE.get(media_type, DEFAULT_FILENAME_HINT)
+            
+            # Generate safe filename
+            from hashlib import md5
+            safe_name = md5(url.encode()).hexdigest()[:16]
+            path = media_dir / f"{safe_name}{suffix}"
+            
+            logger.info(f"Downloading Nextcloud media: {url} -> {path}")
+            logger.info(f"Using credentials: username={username[:3] if username else 'None'}... password_present={bool(password)}")
+            logger.info(f"Using backend_url: {backend_url[:20]}...")
+            
+            # Use NextcloudFilesClient for authenticated download
+            # Prefer the passed backend_url, fallback to self._backend_url if available
+            client = NextcloudFilesClient(
+                backend_url,
+                username,
+                password,
+            )
+            
+            # Download using NextcloudFilesClient
+            success = await client.download_file(url, str(path))
+            await client.close()
+            
+            if success and path.exists():
+                logger.info(f"Downloaded successfully: {path}")
+                return str(path)
+            else:
+                logger.warning(f"Download failed or path doesn't exist: {path}")
+                return None
+                
+        except Exception as e:
+            logger.exception(f"nextcloud_talk media download failed: {e}")
+            return None
 
     def _process_payload(self, payload: dict, backend_url: str) -> bool:
         """
@@ -246,49 +364,49 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
             if not download_url and share_link:
                 download_url = share_link
 
-            file_content_part = {
-                "type": "file",
-                "file_type": media_info["type"],
-                "file_name": media_info["name"],
-                "filename": media_info["name"],  # Alternative name
-                "file_path": media_info["path"],
-                "filepath": media_info["path"],  # Alternative path
-                "mime_type": media_info["mime_type"],
-                "mimetype": media_info["mime_type"],  # Alternative mime type
-                "size": media_info["size"],
-                "preview_available": media_info["preview_available"],
-                "metadata": {
-                    **metadata,
-                    "webdav_url": webdav_url,  # Add WebDAV URL to metadata
-                },
-                # Add source field for file download in message processing
-                # Use WebDAV URL if available, otherwise fall back to share link
-                "source": {
-                    "type": "url",
-                    "url": download_url
-                } if download_url else {"type": "unknown"},
-            }
+            # Download file directly to local path (like DingTalk does)
+            local_file_path = await self._download_media_to_local(
+                download_url,
+                media_info["name"],
+                media_info["type"],
+                media_info["mime_type"],
+                self._api_user,
+                media_info.get("path", ""),
+                self._nc_username,
+                self._nc_password,
+                backend_url,  # Pass backend_url for NextcloudFilesClient
+            )
             
-            channel_payload = {
-                "channel_id": "nextcloud_talk",
-                "sender_id": actor_id,
-                "session_webhook": backend_url,
-                "content_parts": [file_content_part],
-                "meta": {
-                    "actor_id": actor_id,
-                    "actor_name": actor_name,
-                    "actor_type": actor_type,
-                    "conversation_token": conversation_token,
-                    "conversation_name": conversation_name,
-                    "message_id": obj.get("id", ""),
-                    "backend_url": backend_url,
-                    "bot_prefix": self._bot_prefix,
-                    "media_info": media_info,
-                    "api_user": self._api_user,  # Bot account for WebDAV access
-                    "webdav_url": webdav_url,  # WebDAV URL for direct download
-                    "original_content_parts": [file_content_part],  # Preserve original dict data
-                },
-            }
+            if local_file_path:
+                # Create content part with local path (not remote URL!)
+                file_part = nextcloud_content_from_type(
+                    media_info["type"],
+                    local_file_path,
+                    media_info["name"],
+                )
+                
+                channel_payload = {
+                    "channel_id": "nextcloud_talk",
+                    "sender_id": actor_id,
+                    "session_webhook": backend_url,
+                    "content_parts": [file_part],
+                    "meta": {
+                        "actor_id": actor_id,
+                        "actor_name": actor_name,
+                        "actor_type": actor_type,
+                        "conversation_token": conversation_token,
+                        "conversation_name": conversation_name,
+                        "message_id": obj.get("id", ""),
+                        "backend_url": backend_url,
+                        "bot_prefix": self._bot_prefix,
+                        "media_info": media_info,
+                        "api_user": self._api_user,
+                        "local_file_path": local_file_path,  # Add local path for verification
+                    },
+                }
+            else:
+                logger.warning(f"Failed to download media: {media_info['name']}")
+                return False
             
             # 入队
             logger.info(f"Checking enqueue callback: {self._enqueue_callback is not None}")
