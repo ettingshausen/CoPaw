@@ -298,15 +298,18 @@ class NextcloudTalkChannel(BaseChannel):
         converted_parts = []
         for part in content_parts:
             if isinstance(part, dict) and part.get("type") == "file":
+                # Check if file_url is already set (e.g., local path from webhook handler)
+                existing_file_url = part.get("file_url")
+                
                 metadata = part.get("metadata", {})
                 share_link = metadata.get("share-token") or metadata.get("link")
 
-                logger.info(f"Processing file: filename={part.get('filename')}, metadata_keys={list(metadata.keys())}, share_link={share_link}")
+                logger.info(f"Processing file: filename={part.get('filename')}, existing_file_url={existing_file_url}, metadata_keys={list(metadata.keys())}, share_link={share_link}")
 
                 # Build dict with file_url field for FileContent conversion
                 # Message constructor will convert this to FileContent with file_url set
 
-                # Prefer WebDAV URL over share link
+                # Prefer existing file_url (local path), then WebDAV URL, then share link
                 webdav_url = metadata.get("webdav_url")
                 share_link = metadata.get("share-token") or metadata.get("link")
 
@@ -314,9 +317,16 @@ class NextcloudTalkChannel(BaseChannel):
                     "type": "file",
                     "filename": part.get("file_name") or part.get("filename", ""),
                 }
+                
+                # Preserve file_type if already set (e.g., "image", "video", "audio")
+                if part.get("file_type"):
+                    file_part["file_type"] = part.get("file_type")
 
-                # Use WebDAV URL if available (auth access), otherwise use share link
-                if webdav_url:
+                # Use existing file_url if available (local path from download)
+                if existing_file_url:
+                    file_part["file_url"] = existing_file_url
+                    logger.info(f"Using existing file_url (local path) for file: {file_part.get('filename')} -> {existing_file_url}")
+                elif webdav_url:
                     file_part["file_url"] = webdav_url
                     logger.info(f"Populated file_url with WebDAV URL for file: {file_part.get('filename')} -> {webdav_url}")
                 elif share_link:
