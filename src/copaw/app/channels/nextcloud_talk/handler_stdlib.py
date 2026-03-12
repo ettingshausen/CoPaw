@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Python standard library HTTP handler for Nextcloud Talk webhook."""
 
+import asyncio
 import json
 import logging
 import threading
@@ -416,7 +417,6 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
             if self._enqueue_callback:
                 logger.info(f"Enqueueing media file: {media_info['name']}")
                 # Schedule the async callback in the main event loop
-                import asyncio
                 try:
                     # 获取主事件循环（由应用启动时创建）
                     loop = asyncio.get_running_loop()
@@ -429,7 +429,6 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
                     # 如果没有运行中的事件循环，在新线程中运行
                     def run_in_thread():
                         asyncio.run(self._enqueue_callback(channel_payload))
-                    import threading
                     thread = threading.Thread(target=run_in_thread, daemon=True)
                     thread.start()
                 return True
@@ -483,7 +482,6 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
                 # 如果没有运行中的事件循环，在新线程中运行
                 def run_in_thread():
                     asyncio.run(self._enqueue_callback(channel_payload))
-                import threading
                 thread = threading.Thread(target=run_in_thread, daemon=True)
                 thread.start()
                 logger.info(f"Started thread for message processing: {actor_name}")
