@@ -365,16 +365,19 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
                 download_url = share_link
 
             # Download file directly to local path (like DingTalk does)
-            local_file_path = await self._download_media_to_local(
-                download_url,
-                media_info["name"],
-                media_info["type"],
-                media_info["mime_type"],
-                self._api_user,
-                media_info.get("path", ""),
-                self._nc_username,
-                self._nc_password,
-                backend_url,  # Pass backend_url for NextcloudFilesClient
+            # Use asyncio.run to call async method from sync context
+            local_file_path = asyncio.run(
+                self._download_media_to_local(
+                    download_url,
+                    media_info["name"],
+                    media_info["type"],
+                    media_info["mime_type"],
+                    self._api_user,
+                    media_info.get("path", ""),
+                    self._nc_username,
+                    self._nc_password,
+                    backend_url,  # Pass backend_url for NextcloudFilesClient
+                )
             )
             
             if local_file_path:
