@@ -468,7 +468,6 @@ class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
         # 入队
         if self._enqueue_callback:
             # Schedule the async callback in the main event loop
-            import asyncio
             try:
                 # 获取主事件循环（由应用启动时创建）
                 loop = asyncio.get_running_loop()
