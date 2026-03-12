@@ -21,6 +21,7 @@ const CHANNELS_WITH_ACCESS_CONTROL: ChannelKey[] = [
   "feishu",
   "mattermost",
   "matrix",
+  "nextcloud_talk",
 ];
 
 interface ChannelDrawerProps {
@@ -466,6 +467,20 @@ export function ChannelDrawer({
               tooltip="Endpoint path for Nextcloud webhook"
             >
               <Input placeholder="/webhook/nextcloud_talk" />
+            </Form.Item>
+            <Form.Item
+              name="username"
+              label="Username"
+              tooltip="Nextcloud username for WebDAV file download (usually the bot account)"
+            >
+              <Input placeholder="copaw" />
+            </Form.Item>
+            <Form.Item
+              name="password"
+              label="Password"
+              tooltip="Nextcloud app password for WebDAV authentication"
+            >
+              <Input.Password placeholder="App password from Nextcloud Security settings" />
             </Form.Item>
           </>
         );

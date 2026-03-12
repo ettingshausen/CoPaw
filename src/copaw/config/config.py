@@ -152,7 +152,6 @@ class ChannelConfig(BaseModel):
     telegram: TelegramConfig = TelegramConfig()
     mattermost: MattermostConfig = MattermostConfig()
     mqtt: MQTTConfig = MQTTConfig()
-    nextcloud_talk: NextcloudTalkConfig = NextcloudTalkConfig()
     console: ConsoleConfig = ConsoleConfig()
     matrix: MatrixConfig = MatrixConfig()
     voice: VoiceChannelConfig = VoiceChannelConfig()
@@ -474,7 +473,6 @@ ChannelConfigUnion = Union[
     TelegramConfig,
     MattermostConfig,
     MQTTConfig,
-    NextcloudTalkConfig,
     ConsoleConfig,
     VoiceChannelConfig,
 ]
