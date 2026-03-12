@@ -6,6 +6,7 @@
 
 - ✅ **接收聊天消息** - 通过 Webhook 接收 Nextcloud Talk 消息
 - ✅ **发送消息** - 通过 Bot API 发送文本/Markdown 消息
+- ✅ **图片下载** - 自动下载图片并通过 WebDAV 认证访问
 - ✅ **安全验证** - HMAC-SHA256 签名验证所有 webhook 请求
 - ✅ **会话管理** - 支持会话状态保存和跨消息上下文
 - ✅ **表情反应** - 支持接收消息的表情反应（通过 feature 标志）
@@ -37,6 +38,7 @@ pip check aiohttp
 
 - **Bot 安装**：需要 Nextcloud 管理员权限（运行 OCC 命令）
 - **Bot 使用**：普通用户即可，在聊天中添加 bot 即可
+- **图片下载**：需要一个 Nextcloud 账号用于 WebDAV 认证（可以是 bot 专用账号）
 
 ## 快速开始
 
@@ -64,7 +66,32 @@ sudo -u www-data php occ talk:bot:install \
 
 命令会返回 bot token，记录下来！
 
-### 3. 配置 CoPaw
+### 3. 创建 WebDAV 访问账号（用于图片下载）
+
+Bot 接收到图片消息时，需要通过 WebDAV API 下载图片。为此需要提供一个 Nextcloud 账号的用户名和密码：
+
+1. 在 Nextcloud 中创建一个专用账号（推荐）或使用现有账号
+2. 生成 App Password：登录 Nextcloud → 设置 → 安全 → 设备和会话 → 创建新的 App Password
+3. 记录用户名和生成的 App Password
+
+> **安全提示**：建议创建专用的 bot 账号，而非使用个人账号。
+
+### 4. 配置 CoPaw
+
+#### 方式一：通过 Web UI 配置（推荐）
+
+1. 打开 CoPaw 控制台 → 频道配置 → Nextcloud Talk
+2. 填写以下字段：
+   - **Webhook Secret**: 步骤 1 生成的密钥
+   - **Webhook Host**: 默认 `0.0.0.0`
+   - **Webhook Port**: 默认 `8765`
+   - **Webhook Path**: 默认 `/webhook/nextcloud_talk`
+   - **Username**: Nextcloud 用户名（用于 WebDAV 认证）
+   - **Password**: Nextcloud App Password（用于 WebDAV 认证）
+   - **Bot Prefix**: Bot 消息前缀（可选）
+3. 启用频道并保存
+
+#### 方式二：手动编辑配置文件
 
 编辑 `~/.copaw/config.json`：
 
@@ -77,13 +104,15 @@ sudo -u www-data php occ talk:bot:install \
       "webhook_host": "0.0.0.0",
       "webhook_port": 8765,
       "webhook_path": "/webhook/nextcloud_talk",
-      "bot_prefix": "[BOT] "
+      "username": "copaw",
+      "password": "your-app-password",
+      "bot_prefix": ""
     }
   }
 }
 ```
 
-### 4. 配置反向代理（Nginx）
+### 5. 配置反向代理（Nginx）
 
 ```nginx
 location = /webhook/nextcloud_talk {
@@ -98,30 +127,33 @@ location = /webhook/nextcloud_talk {
 
 重要：`X-Nextcloud-Talk-Backend` header 必须设置！
 
-### 5. 重启 CoPaw
+### 6. 重启 CoPaw
 
 ```bash
 copaw app restart
 ```
 
-### 6. 测试
+### 7. 测试
 
 在 Nextcloud Talk 中：
 1. 打开一个聊天
 2. 添加 bot（CoPaw Assistant）
 3. 发送消息："你好"
 4. 应该收到回复！
+5. 发送一张图片，Bot 应该能够识别并处理
 
 ## 配置选项
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `enabled` | bool | false | 启用 channel |
-| `webhook_secret` | string | "" | 共享密钥（必需） |
+| `webhook_secret` | string | "" | 共享密钥（必需，与 OCC 命令中的 --secret 一致） |
 | `webhook_host` | string | "0.0.0.0" | Webhook 服务器监听地址 |
 | `webhook_port` | int | 8765 | Webhook 服务器端口 |
 | `webhook_path` | string | "/webhook/nextcloud_talk" | Webhook 路径 |
-| `bot_prefix` | string | "[BOT] " | Bot 消息前缀 |
+| `username` | string | "" | Nextcloud 用户名（用于 WebDAV 认证下载图片） |
+| `password` | string | "" | Nextcloud App Password（用于 WebDAV 认证） |
+| `bot_prefix` | string | "" | Bot 消息前缀 |
 
 ## 本地开发（使用 ngrok）
 
@@ -137,7 +169,7 @@ ngrok http 8765
 # 得到公网 URL，例如: https://abcd1234.ngrok.io
 ```
 
-然后用 ngrokURL 配置 bot：
+然后用 ngrok URL 配置 bot：
 ```bash
 --url="https://abcd1234.ngrok.io/webhook/nextcloud_talk"
 ```
@@ -153,6 +185,7 @@ Python stdlib HTTP Server (handler_stdlib.py)
     ↓ (verify signature)
 Handler (handler_stdlib.py)
     ↓ (parse Activity Streams)
+    ↓ (download images via WebDAV if present)
 Channel Manager enqueue
     ↓ (AgentRequest)
 CoPaw Agent
@@ -163,11 +196,11 @@ Nextcloud Talk API (send via bot token)
 ### 关键组件
 
 - **channel.py** - 主 channel 类，定义 `start()`、`stop()`、`send()` 方法
-- **handler_stdlib.py** - **Python 标准库** HTTP webhook 处理器，验证签名并解析消息（无 FastAPI 依赖）
+- **handler_stdlib.py** - **Python 标准库** HTTP webhook 处理器，验证签名、解析消息、下载图片
+- **files_client.py** - WebDAV 客户端，用于认证下载 Nextcloud 文件
 - **content_utils.py** - Nextcloud Talk Activity Streams 消息解析
 - **utils.py** - 签名验证、URL 构建、token 存储等工具
 - **constants.py** - 常量定义（header 名称、activity 类型等）
-- **handler.py** - （已弃用）原始 FastAPI 实现，保留供参考
 
 ### Activity Streams 消息格式
 
@@ -214,6 +247,23 @@ Nextcloud Talk 使用 Activity Streams 2.0 标准：
    - OCC 命令中的 `--secret` 参数
    - `config.json` 中的 `webhook_secret` 必须完全一致
 
+### 图片无法下载
+
+1. 检查日志中的错误信息：
+   ```bash
+   copaw logs | grep "Download\|WebDAV\|401\|403"
+   ```
+
+2. 确认 `username` 和 `password` 配置正确：
+   - 用户名是 Nextcloud 登录用户名
+   - 密码是 App Password（不是登录密码）
+
+3. 验证 WebDAV 访问：
+   ```bash
+   curl -u username:app-password \
+     "https://nextcloud.example.com/remote.php/dav/files/username/"
+   ```
+
 ### 无法发送消息
 
 1. 检查 bot token 是否正确保存
@@ -232,6 +282,8 @@ Nextcloud Talk 使用 Activity Streams 2.0 标准：
 2. ✅ **强密钥** - Secret 至少 32 字节，随机生成
 3. ✅ **验证签名** - 所有请求都会验证 HMAC-SHA256
 4. ✅ **限制访问** - 防火墙只允许 Nextcloud 服务器 IP
+5. ✅ **使用 App Password** - 不要使用账号登录密码，使用 Nextcloud 生成的 App Password
+6. ✅ **专用账号** - 建议为 bot 创建专用的 Nextcloud 账号
 
 ## Bot 管理命令
 
