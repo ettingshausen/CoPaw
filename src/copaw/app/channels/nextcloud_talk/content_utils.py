@@ -99,7 +99,7 @@ class NextcloudTalkContentParser:
             message = content_data.get("message", "")
             parameters = content_data.get("parameters", {})
 
-            # 确保 parameters 是字典类型
+            # Ensure parameters is a dict
             if not isinstance(parameters, dict):
                 logger.debug(
                     f"parameters is not dict, converting from {type(parameters)}",  # noqa: E501
