@@ -625,7 +625,7 @@ class NextcloudTalkChannel(BaseChannel):
             )
 
             # Generate safe filename
-            safe_name = hashlib.md5(download_url.encode()).hexdigest()[:16]
+            safe_name = hashlib.sha256(download_url.encode()).hexdigest()
             local_path = media_dir / f"{safe_name}{suffix}"
 
             logger.info(
