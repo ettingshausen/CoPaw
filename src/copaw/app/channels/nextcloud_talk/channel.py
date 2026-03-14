@@ -38,27 +38,20 @@ from ..base import (
     ProcessHandler,
 )
 
-if TYPE_CHECKING:
-    from agentscope_runtime.engine.schemas.agent_schemas import AgentRequest
-
-from .constants import (
-    NEXTCLOUD_TALK_DEBOUNCE_SECONDS,
-    SESSION_ID_SUFFIX_LEN,
-)
 from .content_utils import (
-    NextcloudTalkContentParser,
     session_param_from_token,
 )
-from .files_client import NextcloudFilesClient, create_nextcloud_files_client
+from .files_client import NextcloudFilesClient
 from .handler_stdlib import StdlibWebhookServer
 from .utils import (
-    generate_bot_signature,
     normalize_nextcloud_url,
     build_bot_headers,
-    get_token_store_path,
     load_token_store,
     save_token_store,
 )
+
+if TYPE_CHECKING:
+    from agentscope_runtime.engine.schemas.agent_schemas import AgentRequest
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +286,70 @@ class NextcloudTalkChannel(BaseChannel):
     # Build AgentRequest from native
     # ---------------------------
 
+    def _process_file_content_part(
+        self,
+        part: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Process a single file content part and populate file_url.
+        """
+        existing_file_url = part.get("file_url")
+        metadata = part.get("metadata", {})
+        share_link = metadata.get("share-token") or metadata.get("link")
+
+        logger.info(
+            "Processing file: filename=%s, existing_file_url=%s, "
+            "metadata_keys=%s, share_link=%s",
+            part.get("filename"),
+            existing_file_url,
+            list(metadata.keys()),
+            share_link,
+        )
+
+        # Prefer existing file_url (local path), then WebDAV URL, then
+        # share link
+        webdav_url = metadata.get("webdav_url")
+        share_link = metadata.get("share-token") or metadata.get("link")
+
+        file_part = {
+            "type": "file",
+            "filename": part.get("file_name") or part.get("filename", ""),
+        }
+
+        # Preserve file_type if already set
+        if part.get("file_type"):
+            file_part["file_type"] = part.get("file_type")
+
+        # Populate file_url based on availability
+        if existing_file_url:
+            file_part["file_url"] = existing_file_url
+            logger.info(
+                "Using existing file_url (local path) for file: %s -> %s",
+                file_part.get("filename"),
+                existing_file_url,
+            )
+        elif webdav_url:
+            file_part["file_url"] = webdav_url
+            logger.info(
+                "Populated file_url with WebDAV URL for file: %s -> %s",
+                file_part.get("filename"),
+                webdav_url,
+            )
+        elif share_link:
+            file_part["file_url"] = share_link
+            logger.info(
+                "Populated file_url for file: %s -> %s",
+                file_part.get("filename"),
+                share_link,
+            )
+        else:
+            logger.warning(
+                "No WebDAV URL or share link found for file: %s",
+                file_part.get("filename"),
+            )
+
+        return file_part
+
     def build_agent_request_from_native(
         self,
         native_payload: Any,
@@ -306,78 +363,11 @@ class NextcloudTalkChannel(BaseChannel):
         content_parts = payload.get("content_parts") or []
         meta = dict(payload.get("meta") or {})
 
-        # Fix: Ensure file content_parts have file_url populated from metadata
-        # Use file_url field instead of source.url, because Message construction  # noqa: E501
-        # converts dict to FileContent and only recognizes file_url attribute
+        # Process content parts
         converted_parts = []
         for part in content_parts:
             if isinstance(part, dict) and part.get("type") == "file":
-                # Check if file_url is already set (e.g., local path from
-                # webhook handler)
-                existing_file_url = part.get("file_url")
-
-                metadata = part.get("metadata", {})
-                share_link = metadata.get("share-token") or metadata.get(
-                    "link",
-                )
-
-                logger.info(
-                    "Processing file: filename=%s, existing_file_url=%s, metadata_keys=%s, share_link=%s",
-                    part.get("filename"),
-                    existing_file_url,
-                    list(metadata.keys()),
-                    share_link,
-                )
-
-                # Build dict with file_url field for FileContent conversion
-                # Message constructor will convert this to FileContent with
-                # file_url set
-
-                # Prefer existing file_url (local path), then WebDAV URL, then
-                # share link
-                webdav_url = metadata.get("webdav_url")
-                share_link = metadata.get("share-token") or metadata.get(
-                    "link",
-                )
-
-                file_part = {
-                    "type": "file",
-                    "filename": part.get("file_name")
-                    or part.get("filename", ""),
-                }
-
-                # Preserve file_type if already set (e.g., "image", "video",
-                # "audio")
-                if part.get("file_type"):
-                    file_part["file_type"] = part.get("file_type")
-
-                # Use existing file_url if available (local path from download)
-                if existing_file_url:
-                    file_part["file_url"] = existing_file_url
-                    logger.info(
-                        "Using existing file_url (local path) for file: %s -> %s",
-                        file_part.get("filename"),
-                        existing_file_url,
-                    )
-                elif webdav_url:
-                    file_part["file_url"] = webdav_url
-                    logger.info(
-                        "Populated file_url with WebDAV URL for file: %s -> %s",
-                        file_part.get("filename"),
-                        webdav_url,
-                    )
-                elif share_link:
-                    file_part["file_url"] = share_link
-                    logger.info(
-                        "Populated file_url for file: %s -> %s",
-                        file_part.get("filename"),
-                        share_link,
-                    )
-                else:
-                    logger.warning(
-                        f"No WebDAV URL or share link found for file: {file_part.get('filename')}",  # noqa: E501
-                    )
-
+                file_part = self._process_file_content_part(part)
                 converted_parts.append(file_part)
             else:
                 # Keep other content parts as-is
@@ -425,11 +415,14 @@ class NextcloudTalkChannel(BaseChannel):
             if hasattr(first_msg, "content") and first_msg.content:
                 has_actual_content = True
                 logger.info(
-                    f"build_agent_request_from_native: request has content: {[getattr(c, 'type', 'unknown') for c in first_msg.content]}",  # noqa: E501
+                    "build_agent_request_from_native: request has content: %s",
+                    [getattr(c, "type", "unknown") for c in first_msg.content],
                 )
 
         logger.info(
-            f"build_agent_request_from_native: request created, has content_parts={has_actual_content}",  # noqa: E501
+            "build_agent_request_from_native: request created, "
+            "has content_parts=%s",
+            has_actual_content,
         )
         return request
 
@@ -454,10 +447,10 @@ class NextcloudTalkChannel(BaseChannel):
             # Case 2: type is ContentType.FILE enum (if available)
             try:
                 from agentscope_runtime.engine.schemas.message_schemas import (
-                    ContentType,
+                    ContentType as MessageContentType,
                 )
 
-                if t == ContentType.FILE:
+                if t == MessageContentType.FILE:
                     return True
             except ImportError:
                 # If the module is not available, skip this check
@@ -482,7 +475,8 @@ class NextcloudTalkChannel(BaseChannel):
         Only debounce when there's no text AND no media.
         """
         logger.info(
-            f"_apply_no_text_debounce: called with content_parts={content_parts}",  # noqa: E501
+            "_apply_no_text_debounce: called with content_parts=%s",
+            content_parts,
         )
 
         # If has media, process immediately
@@ -631,7 +625,7 @@ class NextcloudTalkChannel(BaseChannel):
             )
 
             # Generate safe filename
-            safe_name = md5(download_url.encode()).hexdigest()[:16]
+            safe_name = hashlib.md5(download_url.encode()).hexdigest()[:16]
             local_path = media_dir / f"{safe_name}{suffix}"
 
             logger.info(
@@ -693,7 +687,8 @@ class NextcloudTalkChannel(BaseChannel):
             try:
                 save_token_store(self._backend_url_store)
                 logger.info(
-                    f"persisted backend_url_store with {len(self._backend_url_store)} entries",  # noqa: E501
+                    "persisted backend_url_store with %s entries",
+                    len(self._backend_url_store),
                 )
             except Exception:
                 logger.exception("failed to persist backend_url_store")
@@ -703,6 +698,70 @@ class NextcloudTalkChannel(BaseChannel):
     # ---------------------------
     # Sending messages
     # ---------------------------
+
+    async def _apply_rate_limiting(self, to_handle: str) -> None:
+        """
+        Apply rate limiting to prevent sending messages too frequently.
+        """
+        session_id = to_handle
+        async with self._send_lock:
+            last_time = self._last_send_time.get(session_id, 0)
+            current_time = asyncio.get_event_loop().time()
+            elapsed = current_time - last_time
+
+            if elapsed < self._min_send_interval:
+                delay = self._min_send_interval - elapsed
+                logger.debug(
+                    "nextcloud_talk rate limiting: waiting %.1fs "
+                    "before sending",
+                    delay,
+                )
+                await asyncio.sleep(delay)
+
+            self._last_send_time[session_id] = asyncio.get_event_loop().time()
+
+    def _truncate_message_if_needed(self, text: str) -> str:
+        """
+        Truncate message if it exceeds the maximum length.
+        """
+        max_length = 4000  # Reasonable limit for chat messages
+        if len(text) > max_length:
+            truncated = text[: max_length - 3] + "..."
+            logger.warning(
+                "nextcloud_talk message truncated to %s chars",
+                max_length,
+            )
+            return truncated
+        return text
+
+    async def _resolve_backend_url(
+        self,
+        to_handle: str,
+        meta: Dict[str, Any],
+        meta_token: str,
+    ) -> Optional[str]:
+        """
+        Resolve the backend URL for sending messages.
+        """
+        route = self._route_from_handle(to_handle)
+
+        # Try to get backend URL from meta
+        backend_url = meta.get("backend_url") or meta.get(
+            "session_webhook",
+            "",
+        )
+
+        # If not in meta, try lookup from token
+        if not backend_url and "conversation_token" in route:
+            token = route["conversation_token"]
+            backend_url = await self._get_backend_url_from_token(token)
+            if not backend_url and meta_token:
+                # Use meta_token as fallback
+                backend_url = await self._get_backend_url_from_token(
+                    meta_token,
+                )
+
+        return backend_url
 
     async def send(
         self,
@@ -722,67 +781,38 @@ class NextcloudTalkChannel(BaseChannel):
         if not self.enabled:
             return
 
-        # Rate limiting: ensure minimum interval between sends
-        session_id = to_handle
-        async with self._send_lock:
-            last_time = self._last_send_time.get(session_id, 0)
-            current_time = asyncio.get_event_loop().time()
-            elapsed = current_time - last_time
+        # Apply rate limiting
+        await self._apply_rate_limiting(to_handle)
 
-            if elapsed < self._min_send_interval:
-                delay = self._min_send_interval - elapsed
-                logger.debug(
-                    f"nextcloud_talk rate limiting: waiting {delay:.1f}s before sending",  # noqa: E501
-                )
-                await asyncio.sleep(delay)
-
-            self._last_send_time[session_id] = asyncio.get_event_loop().time()
-
-        # Truncate message if too long (Nextcloud Talk has message length
-        # limits)
-        max_length = 4000  # Reasonable limit for chat messages
-        if len(text) > max_length:
-            text = text[: max_length - 3] + "..."
-            logger.warning(
-                f"nextcloud_talk message truncated to {max_length} chars",
-            )
+        # Truncate message if too long
+        text = self._truncate_message_if_needed(text)
 
         # Get conversation token from meta
         meta = meta or {}
         meta_token = meta.get("conversation_token", "")
 
-        # Resolve backend URL and token
-        route = self._route_from_handle(to_handle)
-
-        # Try to get backend URL from meta
-        backend_url = meta.get("backend_url") or meta.get(
-            "session_webhook",
-            "",
+        # Resolve backend URL
+        backend_url = await self._resolve_backend_url(
+            to_handle,
+            meta,
+            meta_token,
         )
-
-        # If not in meta, try lookup from token
-        if not backend_url and "conversation_token" in route:
-            token = route["conversation_token"]
-            backend_url = await self._get_backend_url_from_token(token)
-            if not backend_url:
-                # Use meta_token as fallback
-                if meta_token:
-                    backend_url = await self._get_backend_url_from_token(
-                        meta_token,
-                    )
-
         if not backend_url:
             logger.warning(
-                f"nextcloud_talk cannot send: no backend_url for to_handle={to_handle}",  # noqa: E501
+                "nextcloud_talk cannot send: no backend_url for to_handle=%s",
+                to_handle,
             )
             return
 
         # Get conversation token (for API request)
+        route = self._route_from_handle(to_handle)
         conversation_token = route.get("conversation_token", meta_token)
 
         if not conversation_token:
             logger.warning(
-                f"nextcloud_talk cannot send: no conversation token for to_handle={to_handle}",  # noqa: E501
+                "nextcloud_talk cannot send: no conversation token "
+                "for to_handle=%s",
+                to_handle,
             )
             return
 
@@ -884,22 +914,14 @@ class NextcloudTalkChannel(BaseChannel):
             )
         except Exception:
             logger.exception(
-                f"nextcloud_talk send failed for conversation={conversation_token}",  # noqa: E501
+                "nextcloud_talk send failed for conversation=%s",
+                conversation_token,
             )
 
-    async def send_content_parts(
-        self,
-        to_handle: str,
-        parts: List[Any],
-        meta: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    def _extract_content_parts(self, parts: List[Any]) -> tuple[list, list]:
         """
-        Send content parts (text, images, etc.) to Nextcloud Talk.
-
-        Supports text, images, videos, and audio files.
-        For media files, combines text with media links following OpenClaw pattern.  # noqa: E501
+        Extract text and media parts from content parts.
         """
-        # Extract text parts
         text_parts = []
         media_parts = []
 
@@ -917,15 +939,28 @@ class NextcloudTalkChannel(BaseChannel):
             ):
                 media_parts.append(p)
 
-        # Build main text body
+        return text_parts, media_parts
+
+    def _build_text_body(
+        self,
+        text_parts: list,
+        meta: Optional[Dict[str, Any]],
+    ) -> str:
+        """
+        Build the main text body from text parts.
+        """
         body = "\n".join(text_parts) if text_parts else ""
         prefix = (meta or {}).get("bot_prefix", "")
         if prefix and body:
             body = prefix + body
         elif prefix and not body:
             body = prefix
+        return body
 
-        # Add media attachments following OpenClaw pattern
+    def _add_media_attachments(self, body: str, media_parts: list) -> str:
+        """
+        Add media attachments to the message body following OpenClaw pattern.
+        """
         for m in media_parts:
             t = getattr(m, "type", None)
             if t == ContentType.FILE:
@@ -943,6 +978,30 @@ class NextcloudTalkChannel(BaseChannel):
                 body += f"\n\nVideo: {m.video_url}"
             elif t == ContentType.AUDIO:
                 body += "\n\nAudio attachment"
+
+        return body
+
+    async def send_content_parts(
+        self,
+        to_handle: str,
+        parts: List[Any],
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Send content parts (text, images, etc.) to Nextcloud Talk.
+
+        Supports text, images, videos, and audio files.
+        For media files, combines text with media links following
+        OpenClaw pattern.
+        """
+        # Extract text and media parts
+        text_parts, media_parts = self._extract_content_parts(parts)
+
+        # Build main text body
+        body = self._build_text_body(text_parts, meta)
+
+        # Add media attachments
+        body = self._add_media_attachments(body, media_parts)
 
         if body.strip():
             await self.send(to_handle, body.strip(), meta)
