@@ -47,6 +47,7 @@ from .content_utils import (
     session_param_from_token,
     nextcloud_content_from_type,
 )
+
 from .constants import MAX_MESSAGE_LENGTH
 from .files_client import NextcloudFilesClient
 from .handler_stdlib import StdlibWebhookServer
@@ -61,6 +62,18 @@ if TYPE_CHECKING:
     from agentscope_runtime.engine.schemas.agent_schemas import AgentRequest
 
 logger = logging.getLogger(__name__)
+
+MIME_TYPE_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "audio/ogg": ".ogg",
+}
 
 
 class NextcloudTalkChannel(BaseChannel):
@@ -610,17 +623,7 @@ class NextcloudTalkChannel(BaseChannel):
             mime_type = media_info.get("mime_type", "")
 
             # Add extension based on mime_type or media_type
-            ext_map = {
-                "image/png": ".png",
-                "image/jpeg": ".jpg",
-                "image/gif": ".gif",
-                "image/webp": ".webp",
-                "video/mp4": ".mp4",
-                "video/webm": ".webm",
-                "audio/mpeg": ".mp3",
-                "audio/wav": ".wav",
-                "audio/ogg": ".ogg",
-            }
+            ext_map = MIME_TYPE_EXTENSIONS
             media_type = media_info.get("type", "")
             suffix = (
                 ext_map.get(
@@ -1027,12 +1030,6 @@ class NextcloudTalkChannel(BaseChannel):
 
         logger.info("_run_process_loop: STARTED for to_handle=%s", to_handle)
 
-        bot_prefix = send_meta.get("bot_prefix", "") or getattr(
-            self,
-            "bot_prefix",
-            "",
-        )
-
         all_parts: List[Any] = []
         last_response = None
 
@@ -1060,12 +1057,10 @@ class NextcloudTalkChannel(BaseChannel):
                 await self.send_content_parts(to_handle, all_parts, send_meta)
 
             if last_response and getattr(last_response, "error", None):
-                err = getattr(
-                    last_response.error,
-                    "message",
-                    str(last_response.error),
+                err_text = (
+                    self._get_response_error_message(last_response)
+                    or "Unknown error"
                 )
-                err_text = (bot_prefix or "") + f"Error: {err}"
                 await self._on_consume_error(request, to_handle, err_text)
 
             if self._on_reply_sent:
