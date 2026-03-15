@@ -753,7 +753,7 @@ Nextcloud Talk（原名 Spreed）是 Nextcloud 的内置聊天应用。CoPaw 通
 | Telegram      | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        |
 | Mattermost    | ✓        | ✓        | 🚧       | 🚧       | ✓        | ✓        | ✓        | 🚧       | 🚧       | ✓        |
 | Matrix        | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        |
-| NextcloudTalk | ✓        | ✓        | 🚧       | 🚧       | ✓        | ✓        | 🚧       | 🚧       | 🚧       | 🚧       |
+| NextcloudTalk | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        | 🚧       | 🚧       | 🚧       | 🚧       |
 
 说明：
 
