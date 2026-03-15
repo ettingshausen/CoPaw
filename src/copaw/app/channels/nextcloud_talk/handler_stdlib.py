@@ -35,40 +35,6 @@ FILENAME_HINT_BY_TYPE = {
 DEFAULT_FILENAME_HINT = ".file"
 
 
-def nextcloud_content_from_type(
-    media_type: str,
-    local_path: str,
-    filename: str = "",
-) -> dict:
-    """
-    Build content part from Nextcloud media type and local path.
-
-    Args:
-        media_type: "image", "video", "audio", or "file"
-        local_path: Local file path (already downloaded)
-        filename: Filename for the file
-
-    Returns:
-        Dict compatible with content_parts format
-    """
-    base = {
-        "type": "file",
-        "filename": filename or f"file_{media_type}",
-        "file_url": local_path,  # Local path, not remote URL!
-    }
-
-    if media_type == "image":
-        base["file_type"] = "image"
-    elif media_type == "video":
-        base["file_type"] = "video"
-    elif media_type == "audio":
-        base["file_type"] = "audio"
-    else:
-        base["file_type"] = "file"
-
-    return base
-
-
 class NextcloudTalkWebhookHandler(BaseHTTPRequestHandler):
     """
     HTTP webhook handler for Nextcloud Talk using Python standard library.
