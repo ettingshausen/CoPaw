@@ -617,8 +617,7 @@ class NextcloudTalkChannel(BaseChannel):
 
         try:
             # Prepare local path
-            media_dir = Path("~/.copaw/media/nextcloud_talk").expanduser()
-            media_dir.mkdir(parents=True, exist_ok=True)
+            media_dir = self._media_dir
 
             # Get mime type for extension detection
             mime_type = media_info.get("mime_type", "")
